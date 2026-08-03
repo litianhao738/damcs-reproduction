@@ -1,0 +1,21 @@
+# Secrets and local provider configuration
+.env
+local_config/
+
+# Python bytecode and tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Generated experiments and local output
+results/
+logs/
+videos/
+*.mp4
+
+# Local operating-system and IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
