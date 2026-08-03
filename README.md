@@ -22,19 +22,19 @@ The default task is to collect a diamond. This requires the usual dependency cha
 
 ```text
 .
-├── crafter/                 # Multi-Agent Crafter environment and rendering
-├── memory_system/           # Agent, LLM integration, memory, knowledge graph, planning
-├── GUI/                     # Standalone HumanAgent GUI variants
-├── scripts/                 # Environment / LLM smoke checks and Qwen helper scripts
-├── descriptions/            # Prompts and environment descriptions
-├── icons/                   # Plot and GUI assets
-├── run.py                   # Main headless experiment entry point
-├── run_gui_multi_view.py    # Multi-view interactive GUI entry point
-├── plot.py                  # Experiment-statistics plotting helpers
-├── make_video_from_results.py # Video generation from saved agent frames
-├── requirements.txt         # Windows-friendly Python dependencies
-├── environment-win.yml      # Recommended minimal Conda environment definition
-└── environment.yml          # Full exported Conda environment specification
+|-- crafter/                   # Multi-Agent Crafter environment and rendering
+|-- memory_system/             # Agent, LLM integration, memory, knowledge graph, planning
+|-- GUI/                       # Standalone HumanAgent GUI variants
+|-- scripts/                   # Environment / LLM smoke checks and Qwen helper scripts
+|-- descriptions/              # Prompts and environment descriptions
+|-- icons/                     # Plot and GUI assets
+|-- run.py                     # Main headless experiment entry point
+|-- run_gui_multi_view.py      # Multi-view interactive GUI entry point
+|-- plot.py                    # Experiment-statistics plotting helpers
+|-- make_video_from_results.py # Video generation from saved agent frames
+|-- requirements.txt           # Windows-friendly Python dependencies
+|-- environment-win.yml        # Recommended minimal Conda environment definition
+`-- environment.yml            # Full exported Conda environment specification
 ```
 
 ## Requirements
@@ -99,11 +99,13 @@ Start with a short run and a dedicated output directory:
 python run.py --agent_num 1 --step_num 10 --results_dir results\smoke --no_plot
 ```
 
-Run a standard six-agent DAMCS-style experiment:
+Run the main six-agent DAMCS-style experiment:
 
 ```powershell
 python run.py --agent_num 6 --step_num 350 --results_dir results\damcs_6_agents
 ```
+
+This is the formal reproduction command used for a normal headless experiment. It requires a configured LLM provider because the agents call the selected model during planning and communication. For a quick demonstration or debugging run, reduce `--step_num` and use `--no_plot`.
 
 Useful command-line options:
 
@@ -134,10 +136,22 @@ Controls:
 
 - `v`: switch between single-agent, multi-agent, and overview modes
 - `l`: switch multi-view layout (horizontal, vertical, grid)
-- `0`–`9`: select the followed agent in single-view mode
+- `0`-`9`: select the followed agent in single-view mode
 - `h`: enter HumanAgent action input mode when HumanAgents are enabled
 - `p`: pause or resume the simulation
 - `Esc`: quit
+
+## Relation to the original DAMCS project
+
+This repository is a reproduction and engineering adaptation, not the official DAMCS release. It follows the same high-level idea from the paper and project page: decentralized LLM agents cooperate in Multi-Agent Crafter using structured memory and communication.
+
+Main differences from the paper/original upstream project:
+
+- The code is organized as a runnable local reproduction with additional setup, smoke-test, and provider-configuration scripts.
+- The README documents a Windows/Conda workflow and Qwen/DashScope usage in addition to Azure OpenAI/OpenAI style configuration.
+- Local API keys are expected to live in `.env`; secret files and generated outputs are ignored by Git.
+- The default command is a practical DAMCS-style six-agent run, while exact paper metrics may require matching the paper's full experimental settings, model choices, random seeds, and evaluation protocol.
+- Some GUI and helper scripts are retained for visualization and debugging, so this repository is closer to a reproducible course/project implementation than a minimal paper artifact.
 
 ## Verification without an LLM
 
