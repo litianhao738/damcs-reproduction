@@ -1,3 +1,4 @@
+# 模块说明：导出 Crafter 环境及其常用包装器。
 from .env import Env
 from .recorder import Recorder
 

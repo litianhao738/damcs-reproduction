@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 模块说明：HumanAgent 人工参与模式的示例程序。
 """
 Example script showing how to use HumanAgent in the multi-agent simulation
 """
