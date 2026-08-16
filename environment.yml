@@ -182,6 +182,7 @@ dependencies:
       - jiter==0.9.0
       - joblib==1.5.1
       - jsonpickle==4.1.1
+      - langgraph==1.2.7
       - kiwisolver==1.4.8
       - markupsafe==3.0.2
       - matplotlib==3.10.1

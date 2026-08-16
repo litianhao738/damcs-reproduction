@@ -382,14 +382,21 @@ class CollaborationContextGenerator:
         )
 
 class AgentThinkingProcessor:
-    """Handles parallel processing of agent thinking"""
+    """负责并发执行 Agent 思考，并可复用已持久化的 LLM 响应。"""
     
     @staticmethod
-    def process_agent_thinking_parallel(agents, agents_contexts, info):
+    def process_agent_thinking_parallel(
+        agents,
+        agents_contexts,
+        info,
+        response_cache=None,
+        run_id=None,
+        step=None,
+    ):
         # 变量说明（agents）：参与当前仿真的全部智能体对象列表。
         # 变量说明（agents_contexts）：以智能体编号为键的个性化决策上下文字典。
         # 变量说明（info）：环境附加状态，包含背包、成就、语义地图和生存状态。
-        """Process agent thinking in parallel using ThreadPoolExecutor, but skip HumanAgents"""
+        """用线程池并行处理非人工 Agent，并在调用模型前查询缓存。"""
         # 变量说明（agents_responses）：多个智能体并行思考后返回的结构化结果列表。
         agents_responses = []
         
@@ -399,12 +406,37 @@ class AgentThinkingProcessor:
         ai_agents = [agent for agent in agents if not (hasattr(agent, 'is_human') and agent.is_human)]
         
         if ai_agents:
+            # 变量说明（response_by_agent）：按 Agent ID 汇总缓存或新请求的响应。
+            response_by_agent = {}
+            # 变量说明（request_hashes）：保存新请求写入缓存时使用的稳定摘要。
+            request_hashes = {}
+            # 变量说明（agents_to_call）：缓存未命中、确实需要调用模型的 Agent。
+            agents_to_call = []
+            for agent in ai_agents:
+                if response_cache is None:
+                    agents_to_call.append(agent)
+                    continue
+                request_hash = response_cache.llm_request_hash(
+                    agents_contexts.get(agent.id), info[agent.id]
+                )
+                request_hashes[agent.id] = request_hash
+                cached = response_cache.get_llm_response(
+                    run_id=run_id,
+                    step=step,
+                    agent_id=agent.id,
+                    request_hash=request_hash,
+                )
+                # 命中缓存时不再占用线程池和模型配额。
+                if cached is None:
+                    agents_to_call.append(agent)
+                else:
+                    response_by_agent[agent.id] = cached
             # 变量说明（executor）：用于并行执行多个智能体思考任务的线程池。
             with ThreadPoolExecutor() as executor:
                 # 变量说明（futures）：线程池任务句柄到对应智能体对象的映射。
                 futures = {
                     executor.submit(Agent.process_agent, agent, agents_contexts, info): agent
-                    for agent in ai_agents
+                    for agent in agents_to_call
                 }
                 # 变量说明（future）：线程池中某个智能体尚未完成或已经完成的思考任务句柄。
                 for future, agent in futures.items():
@@ -412,7 +444,15 @@ class AgentThinkingProcessor:
                         # 变量说明（response）：当前 API 调用、任务或模型推理产生的响应对象。
                         response = future.result()
                         response["error"] = None
-                        agents_responses.append(response)
+                        if response_cache is not None:
+                            response_cache.save_llm_response(
+                                run_id=run_id,
+                                step=step,
+                                agent_id=agent.id,
+                                request_hash=request_hashes[agent.id],
+                                response=response,
+                            )
+                        response_by_agent[agent.id] = response
                     # 变量说明（exc）：当前捕获到的异常对象。
                     except Exception as exc:
                         # 变量说明（error）：当前操作失败时记录的异常说明。
@@ -422,9 +462,14 @@ class AgentThinkingProcessor:
                             f"{error}",
                             color='red',
                         )
-                        agents_responses.append(
-                            {"id": agent.id, "thoughts": None, "error": error}
-                        )
+                        response_by_agent[agent.id] = {
+                            "id": agent.id,
+                            "thoughts": None,
+                            "error": error,
+                        }
+
+            # 恢复原 Agent 顺序，避免并发完成先后影响后续状态更新。
+            agents_responses = [response_by_agent[agent.id] for agent in ai_agents]
         
         return agents_responses
     
@@ -432,7 +477,7 @@ class AgentThinkingProcessor:
     def update_agents_from_responses(agents, agents_responses):
         # 变量说明（agents）：参与当前仿真的全部智能体对象列表。
         # 变量说明（agents_responses）：多个智能体并行思考后返回的结构化结果列表。
-        """Update agents based on their thinking responses"""
+        """根据结构化思考结果更新 Agent；失败结果留待下一步重试。"""
         # 变量说明（response）：当前 API 调用、任务或模型推理产生的响应对象。
         for response in agents_responses:
             # 变量说明（agent）：当前正在处理的单个智能体对象。
@@ -617,6 +662,7 @@ class SimulationContextManager:
         return agents_contexts
 
 def get_arg_parser():
+    """定义 headless 实验入口支持的全部命令行参数。"""
     # 变量说明（parser）：命令行参数解析器，用于注册并读取启动选项。
     parser = argparse.ArgumentParser(description='Run multi-agent simulation with optional human agents.')
     parser.add_argument('--human_agents', type=str, default='',
@@ -632,8 +678,18 @@ def get_arg_parser():
     parser.add_argument('--num_of_turn', type=int, default=1,
                         help='Number of simulation turns (default: 1).')
     parser.add_argument('--results_dir', type=str, default='results',
-                        help='Directory for simulation outputs (default: results).')
+                        help='Root directory for timestamp-isolated experiment outputs (default: results).')
     parser.add_argument('--no_plot', action='store_true', default=False,
                         help='Skip plotting after simulation.')
-    # Add more custom arguments here as needed
+    parser.add_argument('--orchestrator', choices=('langgraph', 'legacy'), default='langgraph',
+                        help='Simulation orchestration backend (default: langgraph).')
+    parser.add_argument('--run_id', type=str, default=None,
+                        help='Stable experiment id used for checkpoint resume.')
+    parser.add_argument('--resume', action='store_true', default=False,
+                        help='Resume the latest committed step for --run_id.')
+    parser.add_argument('--checkpoint_db', type=str, default='checkpoints/damcs.sqlite',
+                        help='SQLite checkpoint database (default: checkpoints/damcs.sqlite).')
+    parser.add_argument('--max_concurrency', type=int, default=6,
+                        help='Maximum concurrent LangGraph agent planner branches (default: 6).')
+    # 其他实验参数应继续集中添加在此处，保持 run.py 简洁。
     return parser

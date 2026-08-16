@@ -13,6 +13,7 @@ results/
 logs/
 videos/
 *.mp4
+checkpoints/
 
 # Local operating-system and IDE files
 .DS_Store

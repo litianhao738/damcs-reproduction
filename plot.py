@@ -189,7 +189,7 @@ class Plotter:
         # 变量说明（self.figsize）：Matplotlib 图表的宽高尺寸，单位为英寸。
         self.figsize = figsize
 
-    def plot(self, data_list, legend_labels=None):
+    def plot(self, data_list, legend_labels=None, save_path=None):
         # 变量说明（data_list）：从多个实验文件读取、等待聚合的数据表列表。
         # 变量说明（legend_labels）：`plot` 中待批量处理的标签集合。
         """
@@ -281,6 +281,8 @@ class Plotter:
         plt.legend()
         plt.grid(axis='y')
         plt.tight_layout()
-        os.makedirs('results', exist_ok=True)
-        plt.savefig('results/result_fig.png', bbox_inches='tight', dpi=300)
+        # 主运行器传入实验目录；其他旧调用未传路径时保持原默认行为。
+        save_path = save_path or 'results/result_fig.png'
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.show()

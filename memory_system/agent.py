@@ -8,6 +8,7 @@ from .llm_api import TextModel, get_completion
 import torch
 from .utils import generate_inquiry, safe_extract_op
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 # vision_model = VisionModel()
 # vision_model.load_state_dict(torch.load("memory_system/backbone_models/vision_model.pth"))
 # text_model = TextModel()
@@ -23,13 +24,16 @@ class ActionStatus(Enum):
     INTERRUPTED = 3
     
 class Agent:
-    def __init__(self, id, kg_update_freq=10):
+    def __init__(self, id, kg_update_freq=10, output_dir=None):
         # 变量说明（id）：当前智能体、玩家或记录对象的唯一编号。
         # 变量说明（kg_update_freq）：长期记忆原计划每隔多少条经验更新知识图谱的频率参数。
         # 变量说明（self.memory_system）：保存该智能体全部经验和近期动作历史的记忆容器。
         self.memory_system = MemorySystem(num_history_actions=7)
         # 变量说明（self.id）：当前智能体、玩家或记录对象的唯一编号。
         self.id = id
+        # 每个 Agent 只向自己的实验子目录写入观察帧和知识图谱。
+        self.output_dir = Path(output_dir or Path("results") / f"agent_{id}")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         # 变量说明（self.action_status）：高层动作当前所处的执行状态。
         self.action_status = ActionStatus.DONE
         # 变量说明（self.op）：LLM 选定的高层操作名称，例如导航、制造或共享。
@@ -47,7 +51,7 @@ class Agent:
         # 变量说明（self.kg_update_freq）：长期记忆原计划每隔多少条经验更新知识图谱的频率参数。
         self.kg_update_freq = kg_update_freq
         # 变量说明（self.long_term_mem）：负责语义规则和层次化知识图谱的长期记忆对象。
-        self.long_term_mem = LongTermMemory(path="results", recent_experience_num=kg_update_freq)
+        self.long_term_mem = LongTermMemory(path=str(self.output_dir), recent_experience_num=kg_update_freq)
         # 变量说明（self.replay）：按时间步保存成就和背包快照、用于最终统计的回放记录。
         self.replay = []
         # 变量说明（self.text_model）：调用嵌入模型生成文本向量的包装器。
@@ -120,7 +124,7 @@ class Agent:
         # 变量说明（step）：当前经验或环境时间步编号。
         obs, step, env, info = self.obs, self.step, self.env, self.info
         # 变量说明（self.experience）：由当前观察、情景状态和动作历史组成的一条经验。
-        self.experience = Experience(None, self.text_model, path=f"results/agent_{self.id}")
+        self.experience = Experience(None, self.text_model, path=str(self.output_dir))
         self.experience.sensory_memory.set_memory(vision=obs, step=step, show=False)
         self.experience.procedural_memory.set_memory(self.memory_system.get_history_actions())
         self.experience.episodic_memory.set_memory(player=env._players[self.id],
@@ -130,14 +134,16 @@ class Agent:
                                             episode_timestep=self.episode_timestep)
         # 变量说明（context）：发送给大模型的当前决策上下文文本。
         context = self.experience.generate_context_from_episodic_and_procedural_memory()
-        self.experience.generate_embedding()
+        # 当前版本尚未启用基于向量的相似经验检索，因此关闭 Embedding API 调用。
+        # 情景文本、程序记忆、知识图谱和工作记忆仍会照常参与 Agent 决策。
+        # self.experience.generate_embedding()
         #relevant_experiences = self.memory_system.find_relevant_experiences(self.experience, k=0)
         # 变量说明（wm_content）：将知识图谱摘要整理后注入提示词的工作记忆文本。
         wm_content = ""
         self.wm_content = ""
         if len(self.memory_system) > 0:
             # 变量说明（long_term_mem）：负责语义规则和层次化知识图谱的长期记忆对象。
-            long_term_mem = LongTermMemory(path=f"results/agent_{self.id}", recent_experience_num=len(self.memory_system))
+            long_term_mem = LongTermMemory(path=str(self.output_dir), recent_experience_num=len(self.memory_system))
             if self.table_avaliable:
                 long_term_mem.semantic_memory.update_crafting_station_status("table")
             if self.furnace_avaliable:
@@ -197,7 +203,8 @@ class Agent:
         # 变量说明（context）：发送给大模型的当前决策上下文文本。
         self.think_context = context
         # 变量说明（msg）：准备发送给大模型或其他组件的消息内容。
-        msg = generate_inquiry(vision=f'results/agent_{self.id}/{self.step}.png', 
+        # 发送给多模态模型的图片与本 Agent 本步保存的观察严格对应。
+        msg = generate_inquiry(vision=str(self.output_dir / f'{self.step}.png'),
                                      description=context)
         # 变量说明（self.thoughts）：大模型返回并通过结构校验的决策对象。
         self.thoughts = get_completion(msg)
@@ -238,10 +245,10 @@ class HumanAgent(Agent):
     """
     A subclass of Agent that allows a human user to manually select operations and participate in communication.
     """
-    def __init__(self, id, kg_update_freq=10):
+    def __init__(self, id, kg_update_freq=10, output_dir=None):
         # 变量说明（id）：当前智能体、玩家或记录对象的唯一编号。
         # 变量说明（kg_update_freq）：长期记忆原计划每隔多少条经验更新知识图谱的频率参数。
-        super().__init__(id, kg_update_freq)
+        super().__init__(id, kg_update_freq, output_dir=output_dir)
         # 变量说明（self.is_human）：表示 `is_human` 所描述条件是否成立的布尔标记。
         self.is_human = True
 
