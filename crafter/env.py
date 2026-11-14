@@ -1,4 +1,5 @@
 import collections
+import pathlib
 
 import numpy as np
 
@@ -26,7 +27,8 @@ except ImportError:
 class Env(BaseClass):
   def __init__(
       self, area=(64, 64), view=(9, 9), size=(64, 64),
-      reward=True, length=10000, n_players=1, seed=None):
+      reward=True, length=10000, n_players=1, seed=None,
+      global_map_dir=None, global_map_start=0, global_map_unit=8):
     view = np.array(view if hasattr(view, '__len__') else (view, view))
     size = np.array(size if hasattr(size, '__len__') else (size, size))
     seed = np.random.randint(0, 2**31 - 1) if seed is None else seed
@@ -47,6 +49,15 @@ class Env(BaseClass):
     self._sem_view = engine.SemanticView(self._world, [
         objects.Player, objects.Cow, objects.Zombie,
         objects.Skeleton, objects.Arrow, objects.Plant])
+    if global_map_start < 0:
+      raise ValueError('global_map_start must be non-negative')
+    if global_map_unit < 1:
+      raise ValueError('global_map_unit must be at least 1')
+    self._global_view = engine.GlobalView(
+        self._world, self._textures, unit=global_map_unit)
+    self._global_map_dir = (
+        pathlib.Path(global_map_dir) if global_map_dir else None)
+    self._global_map_start = global_map_start
     self._step = None
     self._unlocked = {}
     
@@ -300,7 +311,18 @@ class Env(BaseClass):
     self.canvases = []
     for player_id in range(len(self._players)):
       self.canvases.append(self.render_one_player(player_id, size))    
+    self.save_global_map()
     return self.canvases
+
+  def save_global_map(self):
+    """Save the current complete world map when global-map capture is enabled."""
+    if self._global_map_dir is None or self._step < self._global_map_start:
+      return
+
+    self._global_map_dir.mkdir(parents=True, exist_ok=True)
+    filename = self._global_map_dir / f'global_map_step_{self._step:04d}.png'
+    engine.imageio.imwrite(filename, self._global_view())
+    print(f'Saved global map: {filename}')
   
   def render(self, size=None):
     self.render_all(size)

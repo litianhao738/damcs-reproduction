@@ -144,7 +144,31 @@ class Textures:
 
 class GlobalView:
 
-  pass
+  """Render the complete Crafter world instead of one player's local view."""
+
+  def __init__(self, world, textures, unit=8):
+    self._world = world
+    self._textures = textures
+    self._unit = int(unit)
+
+  def __call__(self):
+    area = np.array(self._world.area)
+    unit = self._unit
+    canvas = np.zeros(tuple(area * unit) + (3,), np.uint8) + 127
+
+    # Draw every terrain cell first, then overlay players and other objects.
+    for x in range(area[0]):
+      for y in range(area[1]):
+        material = self._world[(x, y)][0]
+        texture = self._textures.get(material, (unit, unit))
+        _draw(canvas, np.array([x, y]) * unit, texture)
+
+    for obj in self._world.objects:
+      texture = self._textures.get(obj.texture, (unit, unit))
+      _draw_alpha(canvas, np.array(obj.pos) * unit, texture)
+
+    # Crafter's render methods use width-height-channel image ordering.
+    return canvas.transpose((1, 0, 2))
 
 
 class UncoverView:

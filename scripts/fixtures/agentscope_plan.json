@@ -1,0 +1,46 @@
+{
+  "epsiode_number": 1,
+  "timestep": 0,
+  "past_events": "The agent started on grass.",
+  "current_facing_direction": "grass",
+  "current_inventory": [],
+  "collaboration": {
+    "target_agent_to_help": -1,
+    "target_agent_need": "not_applicable",
+    "help_method": "none",
+    "can_help_now": "failure",
+    "being_helped_by_agent": -1,
+    "help_method_by_agent": "none",
+    "change_in_plan": "none"
+  },
+  "reflection": {
+    "vision": ["grass", "tree"],
+    "last_action": "noop",
+    "last_action_result": "success",
+    "last_action_result_reflection": "The agent observed its surroundings.",
+    "last_action_repeated_reflection": "No repeated action."
+  },
+  "goal": {
+    "ultimate_goal": "collect_diamond",
+    "long_term_goal": "place_table",
+    "long_term_goal_subgoals": "Collect wood and place a table.",
+    "long_term_goal_progress": "collect_wood",
+    "long_term_goal_status": "in_progress",
+    "current_goal": "collect_wood",
+    "current_goal_reason": "Wood is needed for the table.",
+    "current_goal_status": "in_progress"
+  },
+  "action": {
+    "next_action": "Navigator",
+    "next_action_reason": "Find a tree.",
+    "next_action_prerequisites_status": "success",
+    "next_action_prerequisites": "none",
+    "final_next_action": "Navigator",
+    "final_next_action_reason": "Collect wood first.",
+    "final_next_action_status": "in_progress",
+    "final_target_material_to_collect": "tree",
+    "final_target_material_to_share": "not_applicable",
+    "final_target_agent_id": -1
+  },
+  "summary": "The agent planned to navigate to a tree to collect wood."
+}

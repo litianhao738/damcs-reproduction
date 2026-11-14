@@ -1,12 +1,14 @@
 from .memory_system import MemorySystem, Experience
 # import enum
 from enum import Enum
+from pathlib import Path
 from .knowledge_graph import LongTermMemory, SemanticMemory, WorkingMemory
 from .backbone_models.vision_model import VisionModel
-from .llm_api import TextModel, get_completion
+from .llm_api import ResponseEvent, TextModel, aget_completion, run_async
 import torch
 from .utils import generate_inquiry, safe_extract_op
-from concurrent.futures import ThreadPoolExecutor
+from agentscope.agent import AgentBase
+from agentscope.message import Msg
 # vision_model = VisionModel()
 # vision_model.load_state_dict(torch.load("memory_system/backbone_models/vision_model.pth"))
 # text_model = TextModel()
@@ -17,10 +19,26 @@ class ActionStatus(Enum):
     DONE = 2
     INTERRUPTED = 3
     
-class Agent:
-    def __init__(self, id, kg_update_freq=10):
+class Agent(AgentBase):
+    """DAMCS agent implemented as an AgentScope agent.
+
+    `reply` is the planning step: it receives the step context as a Msg and
+    returns a Msg whose metadata carries the structured ResponseEvent.
+    """
+
+    def __init__(self, id, kg_update_freq=10, results_dir="results"):
+        super().__init__()
         self.memory_system = MemorySystem(num_history_actions=7)
+        # The simulation indexes agents by integer id, so this replaces the
+        # random id assigned by AgentBase.
         self.id = id
+        self.name = f"agent_{id}"
+        self.agent_dir = Path(results_dir) / self.name
+        self.observed_msgs = []
+        self.thoughts = None
+        self.thinking_error = None
+        self.coordination_blocked = False
+        self.constraint_checks = []
         self.action_status = ActionStatus.DONE
         self.op = 'noop'
         self.action = 'noop'
@@ -29,7 +47,7 @@ class Agent:
         self.summary = ""
         self.target_agent_id = -1
         self.kg_update_freq = kg_update_freq
-        self.long_term_mem = LongTermMemory(path="results", recent_experience_num=kg_update_freq)
+        self.long_term_mem = LongTermMemory(path=str(self.agent_dir), recent_experience_num=kg_update_freq)
         self.replay = []
         self.text_model = TextModel()
         
@@ -72,7 +90,7 @@ class Agent:
     def create_experience(self):
         # pre experience
         obs, step, env, info = self.obs, self.step, self.env, self.info
-        self.experience = Experience(None, self.text_model, path=f"results/agent_{self.id}")
+        self.experience = Experience(None, self.text_model, path=str(self.agent_dir))
         self.experience.sensory_memory.set_memory(vision=obs, step=step, show=False)
         self.experience.procedural_memory.set_memory(self.memory_system.get_history_actions())
         self.experience.episodic_memory.set_memory(player=env._players[self.id],
@@ -86,7 +104,7 @@ class Agent:
         wm_content = ""
         self.wm_content = ""
         if len(self.memory_system) > 0:
-            long_term_mem = LongTermMemory(path=f"results/agent_{self.id}", recent_experience_num=len(self.memory_system))
+            long_term_mem = LongTermMemory(path=str(self.agent_dir), recent_experience_num=len(self.memory_system))
             if self.table_avaliable:
                 long_term_mem.semantic_memory.update_crafting_station_status("table")
             if self.furnace_avaliable:
@@ -132,13 +150,30 @@ class Agent:
         self.context = self.context.replace("next", "").replace("Next", "")
         return self.context
 
-    def think(self, context):
+    async def reply(self, msg):
+        context = msg.get_text_content()
         self.think_context = context
-        msg = generate_inquiry(vision=f'results/agent_{self.id}/{self.step}.png', 
-                                     description=context)
-        self.thoughts = get_completion(msg)
+        inquiry = generate_inquiry(vision=str(self.agent_dir / f"{self.step}.png"),
+                                   description=context)
+        self.thoughts = await aget_completion(inquiry)
+        return Msg(
+            name=self.name,
+            content=self.thoughts.summary,
+            role="assistant",
+            metadata=self.thoughts.model_dump(mode="json"),
+        )
+
+    async def observe(self, msg):
+        """Keep messages broadcast by other agents (e.g. through a MsgHub)."""
+        if msg is not None:
+            self.observed_msgs.extend(msg if isinstance(msg, list) else [msg])
+
+    def think(self, context):
+        """Synchronous entry point for one planning step."""
+        response = run_async(self(Msg(name="environment", content=context, role="user")))
+        self.thoughts = ResponseEvent.model_validate(response.metadata)
         return self.thoughts
-    
+
 
     def consolidate_experience(self, final_response):
         self.experience.episodic_memory.final_response = final_response#.summary
@@ -149,8 +184,8 @@ class Agent:
             self.memory_system.history_actions.append(extract_history)
         return op, rss_to_collect, rss_to_share, target_agent_id
 
-    # @staticmethod
-    def process_agent(agent, agents_contexts, info):
+    @staticmethod
+    async def process_agent(agent, agents_contexts, info):
         if agent.action_status != ActionStatus.IN_PROGRESS and not info[agent.id]['sleeping']:
             # Skip HumanAgent processing - they are removed from pipeline
             if hasattr(agent, 'is_human') and agent.is_human:
@@ -158,15 +193,17 @@ class Agent:
                 return {"id": agent.id, "thoughts": None}
             else:
                 # Regular AI agent processing
-                return {"id": agent.id, "thoughts": agent.think(agents_contexts[agent.id])}
+                response = await agent(Msg(name="environment", content=agents_contexts[agent.id], role="user"))
+                agent.thoughts = ResponseEvent.model_validate(response.metadata)
+                return {"id": agent.id, "thoughts": agent.thoughts}
         return {"id": agent.id, "thoughts": None} # In case the agent does not think    
 
 class HumanAgent(Agent):
     """
     A subclass of Agent that allows a human user to manually select operations and participate in communication.
     """
-    def __init__(self, id, kg_update_freq=10):
-        super().__init__(id, kg_update_freq)
+    def __init__(self, id, kg_update_freq=10, results_dir="results"):
+        super().__init__(id, kg_update_freq, results_dir=results_dir)
         self.is_human = True
 
     def choose_action(self):

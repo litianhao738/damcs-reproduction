@@ -1,7 +1,7 @@
 param(
   [string]$CsvPath = "",
   [string]$CondaEnv = "mcrafter",
-  [string]$ChatModel = "qwen3.7-plus-2026-05-26",
+  [string]$ChatModel = "qwen3.7-plus",
   [string]$EmbeddingModel = "text-embedding-v4",
   [string]$BaseUrl = "",
   [int]$LlmTimeoutSeconds = 120,
@@ -12,14 +12,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$projectRoot = Split-Path -Parent $PSScriptRoot
 
-if ($CsvPath -notlike "*.csv") {
+if (-not [string]::IsNullOrWhiteSpace($CsvPath) -and $CsvPath -notlike "*.csv") {
   $PythonArgs = @($CsvPath) + $PythonArgs
   $CsvPath = ""
 }
 
 if ([string]::IsNullOrWhiteSpace($CsvPath)) {
-  $projectCsv = Join-Path (Get-Location) "local_config\qwen_api_key.csv"
+  $projectCsv = Join-Path $projectRoot "local_config\qwen_api_key.csv"
   if (Test-Path -LiteralPath $projectCsv) {
     $CsvPath = $projectCsv
   } else {
@@ -83,7 +84,8 @@ if (-not $PythonArgs -or $PythonArgs.Count -eq 0) {
 Write-Host "Using Qwen provider with chat model '$ChatModel' and embedding model '$EmbeddingModel'."
 Write-Host "Base URL: $BaseUrl"
 
-$condaCommand = Get-Command conda -ErrorAction SilentlyContinue
+$condaCommand = Get-Command conda.exe -CommandType Application -ErrorAction SilentlyContinue |
+  Select-Object -First 1
 if ($condaCommand) {
   $condaExe = $condaCommand.Source
 } else {
@@ -100,5 +102,21 @@ if (-not $condaExe) {
   throw "Could not find conda.exe. Add conda to PATH or edit scripts\run_with_qwen.ps1 with your conda.exe path."
 }
 
-& $condaExe run -n $CondaEnv python @PythonArgs
-exit $LASTEXITCODE
+# Native stderr also carries warnings and progress bars. Preserve its text while
+# using the process exit code to decide whether Python succeeded.
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+  $ErrorActionPreference = "Continue"
+  & $condaExe run --no-capture-output --cwd $projectRoot -n $CondaEnv python @PythonArgs 2>&1 |
+    ForEach-Object {
+      if ($_ -is [System.Management.Automation.ErrorRecord]) {
+        $_.Exception.Message
+      } else {
+        $_
+      }
+    }
+  $pythonExitCode = $LASTEXITCODE
+} finally {
+  $ErrorActionPreference = $previousErrorActionPreference
+}
+exit $pythonExitCode

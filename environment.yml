@@ -147,7 +147,7 @@ dependencies:
   - tk=8.6.13=h1abcd95_1
   - tornado=6.5=py310hbb8c376_0
   - traitlets=5.14.3=pyhd8ed1ab_1
-  - typing_extensions=4.13.2=pyh29332c3_0
+  - typing_extensions>=4.16.0
   - wcwidth=0.2.13=pyhd8ed1ab_1
   - wheel=0.45.1=pyhd8ed1ab_1
   - x264=1!164.3095=h775f41a_2
@@ -159,7 +159,7 @@ dependencies:
   - zstd=1.5.7=h8210216_2
   - pip:
       - annotated-types==0.7.0
-      - anyio==4.8.0
+      - anyio==4.13.0
       - certifi==2025.1.31
       - charset-normalizer==3.4.2
       - cloudpickle==3.1.1
@@ -183,18 +183,20 @@ dependencies:
       - joblib==1.5.1
       - jsonpickle==4.1.1
       - kiwisolver==1.4.8
+      - agentscope==1.0.21
       - markupsafe==3.0.2
+      - mcp==1.30.0
       - matplotlib==3.10.1
       - mpmath==1.3.0
       - networkx==3.4.2
       - numpy==1.26.4
-      - openai==1.66.3
+      - openai==1.109.1
       - opensimplex==0.4.5.1
       - pandas==2.3.0
       - pettingzoo==1.24.3
       - pillow==11.1.0
-      - pydantic==2.10.6
-      - pydantic-core==2.27.2
+      - pydantic==2.14.3
+      - pydantic-core==2.50.4
       - pygame==2.6.1
       - pyparsing==3.2.1
       - pytz==2025.2

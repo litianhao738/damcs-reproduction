@@ -3,6 +3,7 @@ from mimetypes import guess_type
 from pathlib import Path
 from PIL import Image
 import io
+from agentscope.message import ImageBlock, Msg, TextBlock, URLSource
 from .constants import world_item_ids, walkables, MATERIALS, ACTIONS, GENERAL_DESCRIPTION, ENV_DESCRIPTION, RESPONSE_DESCRIPTION, VITALS
 from .pathfinding import PathFinding
 import crafter.constants as const
@@ -24,46 +25,43 @@ def local_image_to_data_url(image_path):
 
 # Reference texture sheet shown to the LLM alongside each agent view.
 TEXTURE_REFERENCE_PATH = Path(__file__).resolve().with_name("textures.png")
-textures = local_image_to_data_url(TEXTURE_REFERENCE_PATH)
 
 #load the text from the file
 def generate_inquiry(vision, description=""):
-    data_url = local_image_to_data_url(vision)
-    msg = [ 
-            {
-                "role": "system", 
-                "content": "You are a helpful assistant." 
-            },
-            {
-                "role": "user", 
-                "content": [
-                    {
-                        "type": "text",
-                        "text": GENERAL_DESCRIPTION + ENV_DESCRIPTION + "The image of all materials in the game and your current view of the envionrment."
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": textures,
-                        }
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": data_url,
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": description + """\n
+    """Build the AgentScope messages for one planning step.
+
+    Local image paths are inlined as base64 data URLs by the AgentScope
+    formatter when the messages are sent to the model.
+    """
+    msg = [
+            Msg(name="system", content="You are a helpful assistant.", role="system"),
+            Msg(
+                name="environment",
+                role="user",
+                content=[
+                    TextBlock(
+                        type="text",
+                        text=GENERAL_DESCRIPTION + ENV_DESCRIPTION + "The image of all materials in the game and your current view of the envionrment.",
+                    ),
+                    ImageBlock(
+                        type="image",
+                        source=URLSource(type="url", url=str(TEXTURE_REFERENCE_PATH)),
+                    ),
+                    ImageBlock(
+                        type="image",
+                        source=URLSource(type="url", url=str(vision)),
+                    ),
+                    TextBlock(
+                        type="text",
+                        text=description + """\n
 ### Instructions for response
 - Please answer each question accurately and faithfully relying on current inventory, view, and situation (health stats, inventory items, and recent actions) and what you see.
 - consider the past experiences, goals, and relevant expriences. What happened, what did you do, did you succeed, and can you do better?
 - consider action prerequisites when make plans.\n
 """,
-                    },
-                ]
-            }
+                    ),
+                ],
+            ),
         ]
     return msg
 

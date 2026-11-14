@@ -2,10 +2,14 @@ import matplotlib.pyplot as plt
 from memory_system.agent import ActionStatus, Agent
 import pandas as pd
 from crafter import constants as const
-from memory_system.utils import go_and_find
+from memory_system.utils import go_and_find, safe_extract_op
 from typing import List
 from memory_system.utils import print_color
-from concurrent.futures import ThreadPoolExecutor
+from memory_system.llm_api import ResponseEvent, run_async
+from memory_system.coordination import coordinate
+from agentscope.message import Msg
+import asyncio
+import json
 from enum import Enum
 import argparse
 import os
@@ -25,6 +29,10 @@ class AgentActionProcessor:
     @staticmethod
     def _process_single_agent_action(agent, agents, env, n_players):
         """Process action for a single agent based on operation type"""
+        if agent.coordination_blocked:
+            agent.update_action('noop')
+            agent.update_action_status(ActionStatus.INTERRUPTED)
+            return
         if agent.op == 'Navigator':
             AgentActionProcessor._process_navigator_action(agent)
         elif agent.op == 'share':
@@ -303,35 +311,65 @@ class AgentThinkingProcessor:
     """Handles parallel processing of agent thinking"""
     
     @staticmethod
-    def process_agent_thinking_parallel(agents, agents_contexts, info):
-        """Process agent thinking in parallel using ThreadPoolExecutor, but skip HumanAgents"""
+    def process_agent_thinking_parallel(
+            agents, agents_contexts, info, coordination_mode="repair",
+            max_repair_rounds=2, coordination_log=None):
+        """Run all AI agents' AgentScope replies concurrently, but skip HumanAgents"""
         agents_responses = []
         
 
         ai_agents = [agent for agent in agents if not (hasattr(agent, 'is_human') and agent.is_human)]
         
         if ai_agents:
-            with ThreadPoolExecutor() as executor:
-                futures = {
-                    executor.submit(Agent.process_agent, agent, agents_contexts, info): agent
-                    for agent in ai_agents
-                }
-                for future, agent in futures.items():
-                    try:
-                        response = future.result()
-                        response["error"] = None
-                        agents_responses.append(response)
-                    except Exception as exc:
-                        error = f"{type(exc).__name__}: {exc}"
-                        print_color(
-                            f"Agent {agent.id} thinking failed for this step: "
-                            f"{error}",
-                            color='red',
-                        )
-                        agents_responses.append(
-                            {"id": agent.id, "thoughts": None, "error": error}
-                        )
+            async def think_all():
+                return await asyncio.gather(
+                    *(Agent.process_agent(agent, agents_contexts, info) for agent in ai_agents),
+                    return_exceptions=True,
+                )
+
+            for agent, response in zip(ai_agents, run_async(think_all())):
+                if isinstance(response, BaseException):
+                    error = f"{type(response).__name__}: {response}"
+                    print_color(
+                        f"Agent {agent.id} thinking failed for this step: "
+                        f"{error}",
+                        color='red',
+                    )
+                    agents_responses.append(
+                        {"id": agent.id, "thoughts": None, "error": error}
+                    )
+                else:
+                    response["error"] = None
+                    agents_responses.append(response)
         
+        if coordination_mode == "off":
+            for agent in agents:
+                agent.coordination_blocked = False
+                agent.constraint_checks = []
+        else:
+            async def replan(agent_id, context):
+                response = await agents[agent_id](Msg(
+                    name="environment", content=context, role="user",
+                ))
+                return ResponseEvent.model_validate(response.metadata)
+
+            observations = {agent.id: info[agent.id] for agent in agents}
+            agents_responses, history = run_async(coordinate(
+                agents, observations, agents_contexts, agents_responses, replan,
+                max_rounds=max_repair_rounds, repair=coordination_mode == "repair",
+            ))
+            if coordination_log is not None:
+                with open(coordination_log, "a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({
+                        "step": agents[0].step,
+                        "mode": coordination_mode,
+                        "rounds": history,
+                        "held_agents": [agent.id for agent in agents if agent.coordination_blocked],
+                    }, ensure_ascii=False) + "\n")
+            if any(check["status"] == "violated" for check in history[0]["checks"]):
+                held = [agent.id for agent in agents if agent.coordination_blocked]
+                print(f"Cooperation: {len(history) - 1} repair round(s); held agents: {held}")
+
         return agents_responses
     
     @staticmethod
@@ -339,6 +377,16 @@ class AgentThinkingProcessor:
         """Update agents based on their thinking responses"""
         for response in agents_responses:
             agent = agents[response['id']]
+            if response.get('blocked', False):
+                if response['thoughts'] is not None:
+                    op, collect, share, target, _ = safe_extract_op(response['thoughts'])
+                    agent.update_current_skill(op, collect, share, target)
+                agent.thinking_error = "Unresolved execution prerequisites: " + "; ".join(
+                    check['message'] for check in response['constraints']
+                    if check['status'] == 'violated' and check['immediate']
+                )
+                agent.update_action_status(ActionStatus.INTERRUPTED)
+                continue
             if response['thoughts'] is not None:
                 agent.thinking_error = None
                 op, rss_to_collect, rss_to_share, target_agent_id = agent.consolidate_experience(response['thoughts'])
@@ -492,8 +540,18 @@ def get_arg_parser():
                         help='Number of steps (default: 350).')
     parser.add_argument('--num_of_turn', type=int, default=1,
                         help='Number of simulation turns (default: 1).')
+    parser.add_argument('--coordination_mode', choices=['off', 'diagnose', 'repair'],
+                        default='repair', help='Cooperation checks and targeted repair (default: repair).')
+    parser.add_argument('--repair_rounds', type=int, choices=[0, 1, 2], default=2,
+                        help='Maximum targeted replanning rounds per planning cycle (default: 2).')
     parser.add_argument('--results_dir', type=str, default='results',
                         help='Directory for simulation outputs (default: results).')
+    parser.add_argument('--save_global_maps', action='store_true', default=False,
+                        help='Save complete world-map images after each step at or after --global_map_start.')
+    parser.add_argument('--global_map_start', type=int, default=0,
+                        help='First environment step whose complete world map is saved (default: 0).')
+    parser.add_argument('--global_map_unit', type=int, default=8,
+                        help='Pixels per world cell in saved complete world maps (default: 8).')
     parser.add_argument('--no_plot', action='store_true', default=False,
                         help='Skip plotting after simulation.')
     # Add more custom arguments here as needed

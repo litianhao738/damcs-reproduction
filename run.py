@@ -21,11 +21,15 @@ N_PLAYERS = 6
 class CompleteMulitAgentSimulation:
     """Complete simulation that handles the full agent processing pipeline"""
     
-    def __init__(self, agents, env, max_steps, n_players):
+    def __init__(self, agents, env, max_steps, n_players,
+                 coordination_mode="repair", repair_rounds=2, coordination_log=None):
         self.agents = agents
         self.env = env
         self.max_steps = max_steps
         self.n_players = n_players
+        self.coordination_mode = coordination_mode
+        self.repair_rounds = repair_rounds
+        self.coordination_log = coordination_log
         
         # Initialize processors
         self.action_processor = AgentActionProcessor()
@@ -66,15 +70,19 @@ class CompleteMulitAgentSimulation:
                 self.agent_state_manager.update_all_agent_states(
                     self.agents, obs, _step, self.env, info, episode_number
                 )
-                agents_with_new_thought = self.agent_state_manager.identify_agents_needing_thought(self.agents, info)
-                agents_contexts = self.simulation_context_manager.create_agent_contexts(self.agents, info)
-                agents_responses = self.agent_thinking_processor.process_agent_thinking_parallel(
-                    self.agents, agents_contexts, info
-                )
-                self.agent_thinking_processor.update_agents_from_responses(
-                    self.agents, agents_responses
-                )
-                self.reporter.show_step_report(self.agents, agents_with_new_thought)
+                if not done:
+                    agents_with_new_thought = self.agent_state_manager.identify_agents_needing_thought(self.agents, info)
+                    agents_contexts = self.simulation_context_manager.create_agent_contexts(self.agents, info)
+                    agents_responses = self.agent_thinking_processor.process_agent_thinking_parallel(
+                        self.agents, agents_contexts, info,
+                        coordination_mode=self.coordination_mode,
+                        max_repair_rounds=self.repair_rounds,
+                        coordination_log=self.coordination_log,
+                    )
+                    self.agent_thinking_processor.update_agents_from_responses(
+                        self.agents, agents_responses
+                    )
+                    self.reporter.show_step_report(self.agents, agents_with_new_thought)
                 # Update counters and progress
                 total_step += 1
                 _step += 1
@@ -109,7 +117,7 @@ class CompleteMulitAgentSimulation:
             for agent in self.agents
         ]
 
-def initialize_agents(human_agent_ids=None, n_players=None):
+def initialize_agents(human_agent_ids=None, n_players=None, results_dir="results"):
     if human_agent_ids is None:
         human_agent_ids = []
     elif isinstance(human_agent_ids, str) and human_agent_ids.strip():
@@ -121,13 +129,22 @@ def initialize_agents(human_agent_ids=None, n_players=None):
     agents = []
     for i in range(n_players):
         if i in human_agent_ids:
-            agents.append(HumanAgent(id=i, kg_update_freq=10))
+            agents.append(HumanAgent(id=i, kg_update_freq=10, results_dir=results_dir))
         else:
-            agents.append(Agent(id=i, kg_update_freq=10))
+            agents.append(Agent(id=i, kg_update_freq=10, results_dir=results_dir))
     return agents
 
-def initialize_environment(num_steps=None, n_players=None):
-    return crafter.Env(length=num_steps, n_players=n_players, seed=4)
+def initialize_environment(
+        num_steps=None, n_players=None, global_map_dir=None,
+        global_map_start=0, global_map_unit=8):
+    return crafter.Env(
+        length=num_steps,
+        n_players=n_players,
+        seed=4,
+        global_map_dir=global_map_dir,
+        global_map_start=global_map_start,
+        global_map_unit=global_map_unit,
+    )
 
 
 def main():
@@ -139,12 +156,38 @@ def main():
     agent_num = args.agent_num if hasattr(args, 'agent_num') else 1
     results_dir = args.results_dir if hasattr(args, 'results_dir') else 'results'
     os.makedirs(results_dir, exist_ok=True)
+    global_map_dir = (
+        os.path.join(results_dir, 'global_maps')
+        if getattr(args, 'save_global_maps', False) else None
+    )
     all_stats = []
     for round_idx in range(num_rounds):
         print(f"=== Simulation Round {round_idx+1} ===")
-        agents = initialize_agents(human_agent_ids=human_agent_ids, n_players=agent_num)
-        env = initialize_environment(num_steps=num_steps, n_players=agent_num)
-        simulation = CompleteMulitAgentSimulation(agents, env, num_steps, agent_num)
+        round_results_dir = (
+            os.path.join(results_dir, f'round_{round_idx + 1}')
+            if num_rounds > 1 else results_dir
+        )
+        agents = initialize_agents(
+            human_agent_ids=human_agent_ids, n_players=agent_num,
+            results_dir=round_results_dir,
+        )
+        round_global_map_dir = global_map_dir
+        if global_map_dir and num_rounds > 1:
+            round_global_map_dir = os.path.join(
+                global_map_dir, f'round_{round_idx + 1}')
+        env = initialize_environment(
+            num_steps=num_steps,
+            n_players=agent_num,
+            global_map_dir=round_global_map_dir,
+            global_map_start=args.global_map_start,
+            global_map_unit=args.global_map_unit,
+        )
+        simulation = CompleteMulitAgentSimulation(
+            agents, env, num_steps, agent_num,
+            coordination_mode=args.coordination_mode,
+            repair_rounds=args.repair_rounds,
+            coordination_log=os.path.join(round_results_dir, "coordination.jsonl"),
+        )
         results_df = simulation.run_simulation()['stats_df']
         # Save stats, file name contains round number and agent number
         save_path = os.path.join(results_dir, f"stats_round_{round_idx+1}_agent_{agent_num}.csv")

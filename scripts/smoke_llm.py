@@ -2,6 +2,9 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from importlib.metadata import version
+
+from agentscope.message import Msg
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -10,8 +13,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from memory_system.llm_api import (
     describe_llm_configuration,
     get_completion,
-    get_client,
-    get_llm_config,
+    get_embedding_model,
+    run_async,
 )
 
 
@@ -32,30 +35,28 @@ def parse_args():
 
 
 def smoke_embedding():
-    config = get_llm_config()
-    response = get_client().embeddings.create(
-        model=config.embedding_model,
-        input=["Mcrafter LLM agent smoke test"],
-    )
-    return {"embedding_dimensions": len(response.data[0].embedding)}
+    response = run_async(get_embedding_model()(["Mcrafter LLM agent smoke test"]))
+    return {"embedding_dimensions": len(response.embeddings[0])}
 
 
 def smoke_chat():
     messages = [
-        {
-            "role": "system",
-            "content": "You generate concise, valid structured planning records.",
-        },
-        {
-            "role": "user",
-            "content": (
+        Msg(
+            name="system",
+            role="system",
+            content="You generate concise, valid structured planning records.",
+        ),
+        Msg(
+            name="environment",
+            role="user",
+            content=(
                 "Create a minimal valid planning record for agent 0 at episode 1, "
                 "timestep 0. The agent sees grass, has no inventory, did noop, "
                 "has ultimate_goal collect_diamond, long_term_goal place_table, "
                 "current_goal collect_wood, and plans to navigate to a tree. "
                 "Use only valid enum values."
             ),
-        },
+        ),
     ]
     parsed = get_completion(messages)
     return {
@@ -73,7 +74,11 @@ def main():
         print(json.dumps({"skipped": True, "config": config_report}, indent=2))
         return 1 if args.strict else 0
 
-    result = {"skipped": False, "config": config_report}
+    result = {
+        "skipped": False,
+        "config": config_report,
+        "framework": {name: version(name) for name in ("agentscope", "openai", "mcp")},
+    }
     if args.mode in {"embedding", "both"}:
         result["embedding"] = smoke_embedding()
     if args.mode in {"chat", "both"}:

@@ -11,6 +11,7 @@ __pycache__/
 # Generated experiments and local output
 results/
 logs/
+tmp/
 videos/
 *.mp4
 

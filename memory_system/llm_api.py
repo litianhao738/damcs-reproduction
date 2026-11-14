@@ -1,16 +1,21 @@
 from typing import Any
 from dataclasses import dataclass
 from functools import lru_cache
+import asyncio
 import json
 import os
-from openai import AzureOpenAI, OpenAI
 import re
+import threading
 import tiktoken
 from .utils import print_color
 from pydantic import BaseModel, Field, ValidationError
 from typing import Union, Literal
-import time
-from openai import APITimeoutError
+from openai import NOT_GIVEN, APITimeoutError, AsyncAzureOpenAI
+
+from agentscope.embedding import OpenAITextEmbedding
+from agentscope.formatter import OpenAIChatFormatter
+from agentscope.message import Msg
+from agentscope.model import OpenAIChatModel
 
 from enum import Enum
 
@@ -175,23 +180,85 @@ def describe_llm_configuration() -> dict[str, Any]:
         }
 
 
-@lru_cache(maxsize=1)
-def get_client():
-    config = get_llm_config()
+_loop = None
+_loop_lock = threading.Lock()
+
+
+def run_async(coro):
+    """Run an AgentScope coroutine from synchronous code.
+
+    AgentScope models and agents are async, while the simulation loop and the
+    pygame GUI are synchronous. All coroutines share one background event loop
+    so the cached async clients stay bound to a single loop.
+    """
+    global _loop
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+    if _loop is not None and running_loop is _loop:
+        coro.close()
+        raise RuntimeError(
+            "run_async cannot block the AgentScope event loop; await the coroutine instead."
+        )
+    with _loop_lock:
+        if _loop is None:
+            _loop = asyncio.new_event_loop()
+            threading.Thread(
+                target=_loop.run_forever, name="agentscope-loop", daemon=True
+            ).start()
+    return asyncio.run_coroutine_threadsafe(coro, _loop).result()
+
+
+def _client_kwargs(config: LLMConfig) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"timeout": _env_float("LLM_TIMEOUT_SECONDS", 120.0)}
     if config.provider == "azure":
-        return AzureOpenAI(
-            azure_endpoint=config.azure_endpoint,
-            api_key=config.azure_api_key,
-            api_version=config.azure_api_version,
-            timeout=_env_float("LLM_TIMEOUT_SECONDS", 120.0),
-        )
-    if config.openai_base_url:
-        return OpenAI(
-            api_key=config.openai_api_key,
-            base_url=config.openai_base_url,
-            timeout=_env_float("LLM_TIMEOUT_SECONDS", 120.0),
-        )
-    return OpenAI(api_key=config.openai_api_key, timeout=_env_float("LLM_TIMEOUT_SECONDS", 120.0))
+        kwargs["azure_endpoint"] = config.azure_endpoint
+        kwargs["api_version"] = config.azure_api_version
+    elif config.openai_base_url:
+        kwargs["base_url"] = config.openai_base_url
+    return kwargs
+
+
+@lru_cache(maxsize=1)
+def get_chat_model() -> OpenAIChatModel:
+    """AgentScope chat model for the configured provider.
+
+    Azure, OpenAI and Qwen (DashScope OpenAI-compatible endpoint) all go
+    through AgentScope's OpenAIChatModel.
+    """
+    config = get_llm_config()
+    is_azure = config.provider == "azure"
+    return OpenAIChatModel(
+        model_name=config.chat_model,
+        api_key=config.azure_api_key if is_azure else config.openai_api_key,
+        stream=False,
+        client_type="azure" if is_azure else "openai",
+        client_kwargs=_client_kwargs(config),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_embedding_model() -> OpenAITextEmbedding:
+    """AgentScope text embedding model for the configured provider."""
+    config = get_llm_config()
+    is_azure = config.provider == "azure"
+    api_key = config.azure_api_key if is_azure else config.openai_api_key
+    dimensions = _env_int("LLM_EMBEDDING_DIMENSIONS", None)
+    model = OpenAITextEmbedding(
+        api_key=api_key,
+        model_name=config.embedding_model,
+        # AgentScope always forwards `dimensions`; NOT_GIVEN makes the OpenAI
+        # SDK omit it, so each model keeps its native size (and models that
+        # reject the parameter, e.g. text-embedding-ada-002, keep working).
+        dimensions=NOT_GIVEN if dimensions is None else dimensions,
+        **({} if is_azure else _client_kwargs(config)),
+    )
+    if is_azure:
+        # OpenAITextEmbedding only builds a plain OpenAI client.
+        model.client = AsyncAzureOpenAI(api_key=api_key, **_client_kwargs(config))
+    return model
+
 
 class ResultType(str, Enum):
     SUCCESS = "success"
@@ -270,8 +337,8 @@ class Goal(BaseModel):
     ultimate_goal: LongTermGoalType = Field(description="What is your ultimate goal?")
     
     long_term_goal: LongTermGoalType = Field(description="Working towards the ultimate goal, what should be your next goal?")
-    long_term_goal_subgoals: str = Field(Description="What are the subgoals to complete the long term goal?")
-    long_term_goal_progress: GoalType = Field(Description="What is the progress of the long term goal?")
+    long_term_goal_subgoals: str = Field(description="What are the subgoals to complete the long term goal?")
+    long_term_goal_progress: GoalType = Field(description="What is the progress of the long term goal?")
     long_term_goal_status: ResultType
     
     current_goal: GoalType = Field(description="The current goal that you are working on.")
@@ -341,16 +408,16 @@ class Collaboration(BaseModel):
     change_in_plan: str = Field(description="How does the help from the agent change your plan, if applicable?")
     
 class ResponseEvent(BaseModel):
-    epsiode_number: int = Field(Description="What is the current episode?")
-    timestep: int = Field(Description="What is the current timestep in the episode?")
-    past_events: str = Field(Description="Briefly describe the past events in the episode.")
+    epsiode_number: int = Field(description="What is the current episode?")
+    timestep: int = Field(description="What is the current timestep in the episode?")
+    past_events: str = Field(description="Briefly describe the past events in the episode.")
     current_facing_direction: MaterialType
-    current_inventory: list[InventoryItemsCount] = Field(Description="What is in your current inventory? Only list items with item count greater than 0.")
+    current_inventory: list[InventoryItemsCount] = Field(description="What is in your current inventory? Only list items with item count greater than 0.")
     collaboration: Collaboration
     reflection: Reflection
     goal: Goal
     action: NextAction
-    summary: str = Field(Description=(
+    summary: str = Field(description=(
                                 "Summarize the episode, including the timestep, long-term goal, progress, significant events, and plan. "
                                 "Explain your actions, the rationale behind your decisions. Treat as if you have done the next actions aleardy. Explain your intended support for other agents (if applicable). What should come next?"
                                 "Keep the summary concise and focused on key information, using *past tense* for everything as it serves as a note for future reference. Use clear and plain language. "
@@ -509,20 +576,39 @@ def _parse_response_event_content(content: str) -> ResponseEvent:
     data = _normalize_response_event_data(data)
     return ResponseEvent.model_validate(data)
     
-def get_completion(messages, model=None):
+async def _to_openai_messages(messages) -> list[dict]:
+    """Accept AgentScope Msg objects or already formatted OpenAI dicts."""
+    messages = list(messages)
+    if messages and isinstance(messages[0], Msg):
+        return await OpenAIChatFormatter().format(messages)
+    return messages
+
+
+def _response_text(response) -> str:
+    return "".join(
+        block["text"] for block in response.content if block["type"] == "text"
+    )
+
+
+async def aget_completion(messages, model=None) -> ResponseEvent:
+    """Ask the AgentScope chat model for one structured ResponseEvent."""
     max_retries = _env_int("LLM_MAX_RETRIES", 3)
-    current_messages = list(messages)
+    if max_retries < 1:
+        raise LLMConfigurationError("LLM_MAX_RETRIES must be at least 1.")
+    current_messages = await _to_openai_messages(messages)
     for attempt in range(max_retries):
         try:
             config = get_llm_config()
+            chat_model = get_chat_model()
+            overrides = {"model": model} if model else {}
             if config.provider == "qwen":
-                response = get_client().chat.completions.create(
-                    model=model or config.chat_model,
-                    messages=_with_json_schema_instruction(current_messages),
+                response = await chat_model(
+                    _with_json_schema_instruction(current_messages),
                     response_format={"type": "json_object"},
                     max_tokens=_env_int("LLM_MAX_TOKENS", 4096),
+                    **overrides,
                 )
-                content = response.choices[0].message.content
+                content = _response_text(response)
                 try:
                     return _parse_response_event_content(content)
                 except (ValidationError, json.JSONDecodeError) as e:
@@ -544,19 +630,25 @@ def get_completion(messages, model=None):
                         ]
                         continue
                     raise
-            response = get_client().beta.chat.completions.parse(
-                model=model or config.chat_model,
-                messages=current_messages,
-                response_format=ResponseEvent,
+            response = await chat_model(
+                current_messages,
+                structured_model=ResponseEvent,
+                **overrides,
             )
-            return response.choices[0].message.parsed
+            return ResponseEvent.model_validate(response.metadata)
         except (APITimeoutError, TimeoutError) as e:
             if attempt < max_retries - 1:
                 print_color(f"Timeout occurred in get_completion, retrying in 10 seconds... (attempt {attempt+1})", color="yellow")
-                time.sleep(10)
+                await asyncio.sleep(10)
             else:
                 print_color("Timeout occurred in get_completion, max retries reached.", color="red")
                 raise
+
+
+def get_completion(messages, model=None) -> ResponseEvent:
+    """Synchronous wrapper around aget_completion."""
+    return run_async(aget_completion(messages, model))
+
 
 class TextModel:
     def __init__(self):
@@ -571,9 +663,8 @@ class TextModel:
         return self.ada_embedding(normalized_text)
     
     def ada_embedding(self, text):
-        config = get_llm_config()
-        response = get_client().embeddings.create(input=[text], model=config.embedding_model)
-        return response.data[0].embedding
+        response = run_async(get_embedding_model()([text]))
+        return response.embeddings[0]
         # return ''
     def check_token_len(self, text):
         return len(self.tokenizer.encode(text))
