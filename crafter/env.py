@@ -85,16 +85,18 @@ class Env(BaseClass):
   def exchange_item(self, target_player_id, item):
     if item in NONE_EXCHANGE_ITEMS:
       print("Cannot exchange item: ", item)
-      return
+      return 0
     if self.player_id == target_player_id:
       print("Cannot exchange item with self.")
-      return
+      return 0
     curr_player = self._players[self.player_id]
     # curr_player_item_before = curr_player.inventory[item]
     # target_player_item_before = self._players[target_player_id].inventory[item]
     if curr_player.inventory[item] > 0:
       curr_player.inventory[item] -= 1
       self._players[target_player_id].inventory[item] += 1
+      return 1
+    return 0
 
     # assert curr_player_item_before == curr_player.inventory[item] + 1
     # assert target_player_item_before == self._players[target_player_id].inventory[item] - 1

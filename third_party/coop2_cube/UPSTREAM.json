@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/HappyEureka/coop2-llm-mas",
+  "commit": "9c53341d77ba9757af2869b5bc8840f02480cd00",
+  "paths": [
+    "cube/env/env.py",
+    "cube/env/cooperative_tasks.py"
+  ],
+  "license": "MIT",
+  "adaptation": "Package entry point exports only Block and CoopBlockPush; environment and task rules unchanged."
+}

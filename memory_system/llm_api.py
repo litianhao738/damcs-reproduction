@@ -6,6 +6,8 @@ import json
 import os
 import re
 import threading
+from collections import Counter
+from time import perf_counter
 import tiktoken
 from .utils import print_color
 from pydantic import BaseModel, Field, ValidationError
@@ -18,6 +20,29 @@ from agentscope.message import Msg
 from agentscope.model import OpenAIChatModel
 
 from enum import Enum
+
+
+MODEL_USAGE = Counter()
+
+
+def get_model_usage():
+    return dict(MODEL_USAGE)
+
+
+async def measured_model_call(kind, model, *args, **kwargs):
+    MODEL_USAGE[kind + '_requests'] += 1
+    started = perf_counter()
+    try:
+        response = await model(*args, **kwargs)
+    finally:
+        MODEL_USAGE['model_seconds'] += perf_counter() - started
+    if response.usage is not None:
+        if kind == 'chat':
+            MODEL_USAGE['chat_input_tokens'] += response.usage.input_tokens
+            MODEL_USAGE['chat_output_tokens'] += response.usage.output_tokens
+        else:
+            MODEL_USAGE['embedding_tokens'] += response.usage.tokens or 0
+    return response
 
 
 class LLMConfigurationError(RuntimeError):
@@ -602,7 +627,7 @@ async def aget_completion(messages, model=None) -> ResponseEvent:
             chat_model = get_chat_model()
             overrides = {"model": model} if model else {}
             if config.provider == "qwen":
-                response = await chat_model(
+                response = await measured_model_call('chat', chat_model,
                     _with_json_schema_instruction(current_messages),
                     response_format={"type": "json_object"},
                     max_tokens=_env_int("LLM_MAX_TOKENS", 4096),
@@ -630,7 +655,7 @@ async def aget_completion(messages, model=None) -> ResponseEvent:
                         ]
                         continue
                     raise
-            response = await chat_model(
+            response = await measured_model_call('chat', chat_model,
                 current_messages,
                 structured_model=ResponseEvent,
                 **overrides,
@@ -663,7 +688,7 @@ class TextModel:
         return self.ada_embedding(normalized_text)
     
     def ada_embedding(self, text):
-        response = run_async(get_embedding_model()([text]))
+        response = run_async(measured_model_call('embedding', get_embedding_model(), [text]))
         return response.embeddings[0]
         # return ''
     def check_token_len(self, text):

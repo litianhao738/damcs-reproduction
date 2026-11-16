@@ -19,6 +19,8 @@ pyvis==0.3.2
 scikit-learn==1.7.0
 scipy==1.15.3
 tqdm==4.67.1
+gymnasium==1.1.1
+pettingzoo==1.24.3
 
 # Agent framework (AgentScope), LLM structured output and embeddings
 agentscope==1.0.21

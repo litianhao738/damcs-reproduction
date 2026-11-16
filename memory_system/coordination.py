@@ -50,6 +50,9 @@ class ConstraintCheck:
     message: str
     related_agents: tuple[int, ...]
     immediate: bool = True
+    item: str | None = None
+    required: int | None = None
+    available: int | None = None
 
 
 def _cell(observation, position):
@@ -103,10 +106,10 @@ def diagnose(plans, observations):
     }
     uncertain_incoming = set()
 
-    def add(plan, rule, status, message, related=(), immediate=True):
+    def add(plan, rule, status, message, related=(), immediate=True, **facts):
         checks.append(ConstraintCheck(
             plan.agent_id, rule, status, message,
-            tuple(dict.fromkeys((plan.agent_id, *related))), immediate,
+            tuple(dict.fromkeys((plan.agent_id, *related))), immediate, **facts,
         ))
 
     def requirements(plan, required, label, immediate=True):
@@ -115,17 +118,17 @@ def diagnose(plans, observations):
             if inventory is None:
                 add(plan, "inventory", "unknown",
                     f"{label}: inventory for {item} was not submitted.",
-                    immediate=immediate)
+                    immediate=immediate, item=item, required=count)
                 continue
             available = inventory.get(item, 0)
             if available >= count:
                 add(plan, "inventory", "satisfied",
                     f"{label}: requires {count} {item}; {available} available.",
-                    immediate=immediate)
+                    immediate=immediate, item=item, required=count, available=available)
             elif (plan.agent_id, item) in uncertain_incoming:
                 add(plan, "inventory", "unknown",
                     f"{label}: needs {count} {item}; a planned incoming share is unverified.",
-                    immediate=immediate)
+                    immediate=immediate, item=item, required=count, available=available)
             else:
                 providers = [
                     other_id for other_id, stock in inventories.items()
@@ -134,7 +137,7 @@ def diagnose(plans, observations):
                 ]
                 add(plan, "inventory", "violated",
                     f"{label}: requires {count} {item}; only {available} available.",
-                    providers, immediate)
+                    providers, immediate, item=item, required=count, available=available)
 
     # Sharing is a high-level side effect before env.step, in agent order.
     for plan in plans:
@@ -151,11 +154,14 @@ def diagnose(plans, observations):
             continue
         inventory = inventories[plan.agent_id]
         if inventory is None:
-            add(plan, "inventory", "unknown", f"Share: inventory for {plan.item} was not submitted.")
+            add(plan, "inventory", "unknown", f"Share: inventory for {plan.item} was not submitted.",
+                item=plan.item, required=1)
             if valid_target:
                 uncertain_incoming.add((plan.recipient, plan.item))
             continue
         requirements(plan, {plan.item: 1}, "Share")
+        if valid_target and (plan.agent_id, plan.item) in uncertain_incoming:
+            uncertain_incoming.add((plan.recipient, plan.item))
         if valid_target and inventory.get(plan.item, 0) >= 1:
             inventory[plan.item] -= 1
             recipient = inventories[plan.recipient]
@@ -265,7 +271,8 @@ def _repair_context(agent_id, base_context, checks, plans, observations, attempt
     )
 
 
-async def coordinate(agents, observations, contexts, responses, replan, max_rounds=2, repair=True):
+async def coordinate(agents, observations, contexts, responses, replan, max_rounds=2, repair=True,
+                     execution_guard=None):
     """Replan affected agents on one fixed observation snapshot.
 
     replan(agent_id, context) returns a ResponseEvent. Only the final response
@@ -297,6 +304,7 @@ async def coordinate(agents, observations, contexts, responses, replan, max_roun
             if check.status == "violated" and (check.immediate or check.agent_id in proposed)
             for agent_id in check.related_agents
             if agent_id in by_id
+            and not agents[agent_id].review_paused
             and not observations[agent_id].get("sleeping", False)
             and not observations[agent_id].get("dead", False)
         }
@@ -340,7 +348,8 @@ async def coordinate(agents, observations, contexts, responses, replan, max_roun
 
     blocked = {
         check.agent_id for check in checks
-        if repair and check.status == "violated" and check.immediate
+        if (repair if execution_guard is None else execution_guard)
+        and check.status == "violated" and check.immediate
     }
     for agent in agents:
         agent.coordination_blocked = agent.id in blocked

@@ -6,7 +6,8 @@ from memory_system.utils import go_and_find, safe_extract_op
 from typing import List
 from memory_system.utils import print_color
 from memory_system.llm_api import ResponseEvent, run_async
-from memory_system.coordination import coordinate
+from memory_system.coordination import Plan, coordinate
+from memory_system.repair_scopes import generate_scope_candidates
 from agentscope.message import Msg
 import asyncio
 import json
@@ -21,14 +22,17 @@ class AgentActionProcessor:
     """Handles agent action processing"""
     
     @staticmethod
-    def process_all_agent_actions(agents, env, n_players):
+    def process_all_agent_actions(agents, env, n_players, event_sink=None):
         """Process actions for all agents with different operation types"""
         for agent in agents:
-            AgentActionProcessor._process_single_agent_action(agent, agents, env, n_players)
+            AgentActionProcessor._process_single_agent_action(agent, agents, env, n_players, event_sink)
     
     @staticmethod
-    def _process_single_agent_action(agent, agents, env, n_players):
+    def _process_single_agent_action(agent, agents, env, n_players, event_sink=None):
         """Process action for a single agent based on operation type"""
+        if agent.review_paused:
+            agent.update_action('noop')
+            return
         if agent.coordination_blocked:
             agent.update_action('noop')
             agent.update_action_status(ActionStatus.INTERRUPTED)
@@ -36,7 +40,7 @@ class AgentActionProcessor:
         if agent.op == 'Navigator':
             AgentActionProcessor._process_navigator_action(agent)
         elif agent.op == 'share':
-            AgentActionProcessor._process_share_action(agent, agents, env, n_players)
+            AgentActionProcessor._process_share_action(agent, agents, env, n_players, event_sink)
         else:
             AgentActionProcessor._process_general_action(agent)
     
@@ -58,11 +62,14 @@ class AgentActionProcessor:
             agent.update_action_status(ActionStatus.DONE)
     
     @staticmethod
-    def _process_share_action(agent, agents, env, n_players):
+    def _process_share_action(agent, agents, env, n_players, event_sink=None):
         """Process share operation for an agent"""
         if agent.rss_to_share != 'not_applicable':
             env.switch_player(agent.id)
-            env.exchange_item(agent.target_agent_id, agent.rss_to_share)
+            transferred = env.exchange_item(agent.target_agent_id, agent.rss_to_share)
+            if event_sink is not None:
+                event_sink("item_transferred", sender=agent.id, recipient=agent.target_agent_id,
+                           item=agent.rss_to_share, quantity=transferred)
         
         agent.update_action('noop')
         agent.update_action_status(ActionStatus.DONE)
@@ -313,7 +320,8 @@ class AgentThinkingProcessor:
     @staticmethod
     def process_agent_thinking_parallel(
             agents, agents_contexts, info, coordination_mode="repair",
-            max_repair_rounds=2, coordination_log=None):
+            max_repair_rounds=2, coordination_log=None,
+            scope_mode="suggest", scope_max_agents=2, intervention=None, execution_guard=None):
         """Run all AI agents' AgentScope replies concurrently, but skip HumanAgents"""
         agents_responses = []
         
@@ -342,7 +350,7 @@ class AgentThinkingProcessor:
                     response["error"] = None
                     agents_responses.append(response)
         
-        if coordination_mode == "off":
+        if coordination_mode == "off" and execution_guard is not True:
             for agent in agents:
                 agent.coordination_blocked = False
                 agent.constraint_checks = []
@@ -357,7 +365,24 @@ class AgentThinkingProcessor:
             agents_responses, history = run_async(coordinate(
                 agents, observations, agents_contexts, agents_responses, replan,
                 max_rounds=max_repair_rounds, repair=coordination_mode == "repair",
+                execution_guard=execution_guard,
             ))
+            scope_analysis = None
+            if scope_mode in ("suggest", "auto", "human") and coordination_mode == "repair" \
+                    and (intervention is None or intervention.pending is None):
+                scope_analysis = generate_scope_candidates(
+                    [Plan(**plan) for plan in history[-1]["plans"]], observations,
+                    max_scope_agents=scope_max_agents,
+                    editable_agents={agent.id for agent in ai_agents},
+                )
+                for response in agents_responses:
+                    response["scope_suggestion"] = scope_analysis["selected"]
+                if scope_analysis["selected"] is not None:
+                    selected = scope_analysis["selected"]
+                    print(f"Repair scope suggestion: edit agents {selected['edited_agents']}; "
+                          f"covers {list(selected['covered_targets'])}")
+            if intervention is not None:
+                agents_responses = intervention.process(agents, observations, agents_responses, scope_analysis)
             if coordination_log is not None:
                 with open(coordination_log, "a", encoding="utf-8") as stream:
                     stream.write(json.dumps({
@@ -365,6 +390,8 @@ class AgentThinkingProcessor:
                         "mode": coordination_mode,
                         "rounds": history,
                         "held_agents": [agent.id for agent in agents if agent.coordination_blocked],
+                        "scope_analysis": scope_analysis,
+                        "paused_agents": [agent.id for agent in agents if agent.review_paused],
                     }, ensure_ascii=False) + "\n")
             if any(check["status"] == "violated" for check in history[0]["checks"]):
                 held = [agent.id for agent in agents if agent.coordination_blocked]
@@ -377,6 +404,32 @@ class AgentThinkingProcessor:
         """Update agents based on their thinking responses"""
         for response in agents_responses:
             agent = agents[response['id']]
+            override = response.get('plan_override')
+            if override is not None:
+                response['thoughts'] = response['thoughts'] or agent.pending_plan_response or agent.thoughts
+                if response['thoughts'] is not None:
+                    data = response['thoughts'].model_dump(mode='json')
+                    data['action'].update({
+                        'next_action': override['operation'], 'final_next_action': override['operation'],
+                        'final_target_material_to_collect': override['material'],
+                        'final_target_material_to_share': override['item'],
+                        'final_target_agent_id': override['recipient'],
+                        'final_next_action_reason': f"Applied {response['intervention']['source']} plan edit.",
+                        'final_next_action_status': 'in_progress',
+                    })
+                    if override['operation'] == 'share' or override['operation'].startswith('make_'):
+                        data['goal']['current_goal'] = override['operation']
+                    data['summary'] += f" Committed {response['intervention']['source']} edit: {override}; execution pending."
+                    response['thoughts'] = ResponseEvent.model_validate(data)
+                agent.intervention_notes.append(f"{response['intervention']['source']}: {override}")
+            if response.get('deferred', False):
+                if response['thoughts'] is not None:
+                    agent.pending_plan_response = response['thoughts']
+                    op, collect, share, target, _ = safe_extract_op(response['thoughts'])
+                    agent.update_current_skill(op, collect, share, target)
+                agent.update_action_status(ActionStatus.IN_PROGRESS)
+                continue
+            agent.pending_plan_response = None
             if response.get('blocked', False):
                 if response['thoughts'] is not None:
                     op, collect, share, target, _ = safe_extract_op(response['thoughts'])
@@ -388,12 +441,19 @@ class AgentThinkingProcessor:
                 agent.update_action_status(ActionStatus.INTERRUPTED)
                 continue
             if response['thoughts'] is not None:
+                agent.thoughts = response['thoughts']
                 agent.thinking_error = None
                 op, rss_to_collect, rss_to_share, target_agent_id = agent.consolidate_experience(response['thoughts'])
                 agent.update_current_skill(op, rss_to_collect, rss_to_share, target_agent_id)
                 agent.update_action_status(ActionStatus.IN_PROGRESS)
             elif response.get('error'):
                 agent.thinking_error = response['error']
+            if override is not None and response['thoughts'] is None:
+                agent.update_current_skill(override['operation'], override['material'], override['item'], override['recipient'])
+                agent.update_action_status(ActionStatus.IN_PROGRESS)
+                agent.memory_system.history_actions.append({
+                    'role': 'user', 'content': f"Committed plan edit: {override}; execution pending.",
+                })
 
 
 class SimulationLogger:
@@ -449,6 +509,11 @@ class SimulationLogger:
                     summary = f"Human agent {agent.id} chose: {agent.op}"
                 else:
                     context = agent.think_context
+                    if agent.review_paused:
+                        report.append({'agent_id': agent.id, 'context': context,
+                                       'info': 'Waiting for plan review.',
+                                       'summary': f'Pending plan: {agent.op}; execution paused.'})
+                        continue
                     thinking_error = getattr(agent, 'thinking_error', None)
                     if thinking_error:
                         report.append({
@@ -515,6 +580,8 @@ class SimulationContextManager:
         agents_contexts = {}
         # agents_with_new_thought = [False] * len(agents)
         for agent in agents:
+            if agent.review_paused:
+                continue
             context = agent.create_experience()
             print(f"agent_{agent.id}", agent.wm_content)
             
@@ -544,6 +611,24 @@ def get_arg_parser():
                         default='repair', help='Cooperation checks and targeted repair (default: repair).')
     parser.add_argument('--repair_rounds', type=int, choices=[0, 1, 2], default=2,
                         help='Maximum targeted replanning rounds per planning cycle (default: 2).')
+    parser.add_argument('--scope_mode', choices=['off', 'suggest', 'auto', 'human'], default='suggest',
+                        help='Record finite-domain repair scope suggestions in repair mode (default: suggest).')
+    parser.add_argument('--scope_max_agents', type=int, choices=[1, 2], default=2,
+                        help='Maximum AI agents whose fields a suggested repair may change (default: 2).')
+    parser.add_argument('--condition', choices=['custom', 'A', 'B', 'C', 'H0', 'H1', 'H2'], default='custom')
+    parser.add_argument('--seed', type=int, default=4)
+    parser.add_argument('--repeat_id', type=int, default=0)
+    parser.add_argument('--human_requests', type=int, default=3)
+    parser.add_argument('--review_strategy', choices=['verified', 'owner', 'related'], default='verified')
+    parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='global')
+    parser.add_argument('--evidence_mode', choices=['compact', 'full'], default='compact')
+    parser.add_argument('--revalidation', choices=['incremental', 'full'], default='incremental')
+    parser.add_argument('--review_timeout', type=float, default=120)
+    parser.add_argument('--review_step_seconds', type=float, default=1)
+    parser.add_argument('--review_port', type=int, default=8765)
+    parser.add_argument('--reviewer', choices=['human', 'scripted'], default='human')
+    parser.add_argument('--scripted_decision', choices=['approve', 'reject'], default='approve')
+    parser.add_argument('--scripted_delay_steps', type=int, default=2)
     parser.add_argument('--results_dir', type=str, default='results',
                         help='Directory for simulation outputs (default: results).')
     parser.add_argument('--save_global_maps', action='store_true', default=False,

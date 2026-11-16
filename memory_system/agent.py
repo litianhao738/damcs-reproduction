@@ -39,6 +39,9 @@ class Agent(AgentBase):
         self.thinking_error = None
         self.coordination_blocked = False
         self.constraint_checks = []
+        self.review_paused = False
+        self.pending_plan_response = None
+        self.intervention_notes = []
         self.action_status = ActionStatus.DONE
         self.op = 'noop'
         self.action = 'noop'
@@ -147,6 +150,8 @@ class Agent(AgentBase):
             
         previous_timestamps_summary = self.memory_system.generate_previous_timestamps_summary(k=1)
         self.context = previous_timestamps_summary + context + wm_content
+        if self.intervention_notes:
+            self.context += "\n### Applied plan edits\n" + "\n".join(self.intervention_notes[-3:])
         self.context = self.context.replace("next", "").replace("Next", "")
         return self.context
 
@@ -186,6 +191,8 @@ class Agent(AgentBase):
 
     @staticmethod
     async def process_agent(agent, agents_contexts, info):
+        if agent.review_paused:
+            return {"id": agent.id, "thoughts": None}
         if agent.action_status != ActionStatus.IN_PROGRESS and not info[agent.id]['sleeping']:
             # Skip HumanAgent processing - they are removed from pipeline
             if hasattr(agent, 'is_human') and agent.is_human:

@@ -29,6 +29,8 @@ The default task is to collect a diamond. This requires the usual dependency cha
 |-- descriptions/              # Prompts and environment descriptions
 |-- icons/                     # Plot and GUI assets
 |-- run.py                     # Main headless experiment entry point
+|-- run_cube.py                # COOP2 CUBE runner using the same review controller
+|-- third_party/coop2_cube/     # Pinned upstream CUBE rules and MIT license
 |-- run_gui_multi_view.py      # Multi-view interactive GUI entry point
 |-- plot.py                    # Experiment-statistics plotting helpers
 |-- make_video_from_results.py # Video generation from saved agent frames
@@ -133,6 +135,8 @@ Useful command-line options:
 | `--num_of_turn` | `1` | Number of simulation rounds. |
 | `--coordination_mode` | `repair` | `off`: original planning; `diagnose`: report checks; `repair`: targeted replanning and holding unresolved immediate operations. |
 | `--repair_rounds` | `2` | Maximum extra targeted replanning rounds per cycle: `0`, `1`, or `2`. |
+| `--scope_mode` | `suggest` | In `repair` mode, generate and log verified repair-scope suggestions; `off` skips scope search. |
+| `--scope_max_agents` | `2` | Maximum AI agents whose plan fields a suggested repair may change: `1` or `2`. Separate from repair rounds. |
 | `--results_dir` | `results` | Directory for CSV statistics and observations. Use a unique directory per experiment. |
 | `--save_global_maps` | off | Save complete world-map screenshots under `<results_dir>/global_maps`. |
 | `--global_map_start` | `0` | First step to save when `--save_global_maps` is enabled. |
@@ -211,9 +215,84 @@ python scripts\smoke_coordination.py
 python run.py --agent_num 2 --step_num 10 --coordination_mode repair --repair_rounds 2 --results_dir results\repair_smoke --no_plot
 ```
 
-For a diagnosis-only comparison, use `--coordination_mode diagnose`; this adds no repair calls or action holds. `--coordination_mode off` keeps the original planning behavior. These switches are exposed by the headless entry point.
+Use `--condition A` for planning with common execution protection, or `--condition B` to add at most two targeted replanning rounds. The headless runner applies the same immediate-prerequisite guard in every condition, including `diagnose` and `off`. The lower-level coordination API retains its opt-in guard parameter for existing GUI callers.
 
 Each headless run saves `coordination.jsonl` under its round's output directory, with plans, per-rule checks, replanned agents, and held agents. Its `step` follows the runner's existing zero-based observation index. Repair rounds count planning revisions; provider/API retry settings are separate. Terminal headless steps do not request new plans or repairs.
+
+### Repairable scope suggestions
+
+After targeted replanning, `memory_system/repair_scopes.py` enumerates finite edits to the current plans and recommends a joint repair scope. The first version covers crafting-material deficits and missing collection tools when the declared target material is already in front of the agent. It checks one environment step, including transfers before primitive actions.
+
+The edited agents can differ from the agents with reported problems. A provider sharing wood can restore another agent's unchanged crafting plan. The scope records the actual changed fields separately from the agents whose facts and commitments are needed as evidence.
+
+Each candidate must produce its fixed manufacturing or collection event and preserve verified work outside the edited scope. An all-`noop` plan does not repair a manufacturing goal. Shared stock is consumed in execution order, so independently feasible repairs cannot claim the same unit twice. Checks return `repairable`, `infeasible` within the declared finite domain, or `unknown` when relevant evidence or effects are missing. The allowed domain and horizon accompany the result.
+
+The projection models the submitted-state player action pass, using recipes and the agents' submitted observations. Existing navigation contributes only its next primitive move; future trajectories, survival and later autonomous-object changes are outside this model's guarantee.
+
+`--scope_mode suggest` adds no model calls and records candidates without applying them. `--scope_mode auto` verifies and commits the selected joint patch. `--scope_mode human` offers a budgeted plan review before the same automatic fallback. Diagnosis-only and coordination-off modes skip scope search.
+
+`coordination.jsonl` includes `scope_analysis`: targets, finite domains, per-scope results, minimal candidates, a selected witness (or a reason for no recommendation), assignment count and search time. Selection prioritizes covered immediate targets, then direct collection targets, then fewer edited agents and fewer fields. It can cover part of a snapshot's targets; other unresolved operations retain their existing execution policy.
+
+```powershell
+python scripts\smoke_repair_scopes.py
+python scripts\evaluate_scope_examples.py --results_dir results\scope_examples
+python run.py --agent_num 2 --step_num 10 --scope_mode suggest --scope_max_agents 2 --results_dir results\scope_smoke --no_plot
+```
+
+The example comparison uses controlled cases and verifies selected witnesses with real Crafter execution. It compares problem-owner ordering, a complete-related-group coverage reference, and verified scope selection. It measures structural repairability and search cost; human benefit and full-task improvements need separate experiments.
+
+## Budgeted plan review and experiments
+
+The controller in `memory_system/intervention.py` keeps edit permissions S, review evidence E, and waiting agents P separate. It checks the whole submitted patch before applying any edit. The executor pauses both primitive actions and the transfers that happen before `env.step`.
+
+| Condition | Behavior |
+| --- | --- |
+| A | Autonomous planning and the common execution guard |
+| B | A plus at most two targeted replanning rounds |
+| C | B plus verified scope search and automatic execution |
+| H0 | B plus problem-owner review, with C's automatic fallback |
+| H1 | B plus complete-related-group coverage review, with the same fallback |
+| H2 | B plus verified repair-scope review, with the same fallback |
+
+H1 is a transparent structural reference, not a claimed reproduction of a paper's selection algorithm. All conditions use submitted observations and the same environment rules. The candidate domain is shared; the selected edit scope controls which agents and fields the reviewer can change.
+
+```powershell
+# Automatic scope execution
+python run.py --condition C --agent_num 6 --step_num 350 --seed 4 --results_dir results\auto --no_plot
+
+# Open the printed localhost URL to approve, preview, edit or skip a request
+python run.py --condition H2 --human_requests 3 --scope_max_agents 2 --pause_mode local --results_dir results\human --no_plot
+
+# Preview a paired-seed matrix without calling models
+python scripts\run_experiments.py --conditions A B C H0 H1 H2 --seeds 4 5 6 --dry_run
+
+# A scripted reviewer checks the pipeline; its replies are labelled as scripted
+python scripts\run_experiments.py --conditions C H2 --seeds 4 --step_num 10 --reviewer scripted --results_dir results\pipeline
+
+# Offline comparison on identical captured failure snapshots
+python scripts\evaluate_frozen_scopes.py --input results\pipeline
+```
+
+`--human_requests` is the per-episode request budget B; a rejection or timeout consumes its issued request. `--scope_max_agents` is edit capacity K. `--review_timeout` is wall time; `--review_step_seconds` paces environment ticks while waiting. Global and local waiting both advance the environment, with held agents executing `noop`. `--pause_mode none` continues execution and rechecks replies. `--revalidation full` always checks the whole team; `incremental` checks dependencies and reuses an unchanged sufficient certificate when possible.
+
+Crafter compact evidence removes inventory/view groups only when the declared one-step verdict and existing protection obligations remain provable. Minimality is by deletion of these groups relative to fixed plans, positions and permissions; it is not a global minimum or a guarantee of human understanding. CUBE retains its complete observed board as one evidence group.
+
+Each episode saves `config.json` (seed, condition, source hashes and model names), `model_usage.json`, `events.jsonl`, `intervention_summary.json`, immutable requests under `reviews/`, and replayable submitted-state snapshots under `failures/`. Logs distinguish approval, commit, actual target recovery and final task success. Batch runs export `episodes.json` and `episodes.csv`, retaining failed episodes and process exit codes. Use `--summarize_only` to regenerate the exports.
+
+Batch ablations: `--suite capacity --conditions C H2`, `--suite evidence --conditions H2`, and `--suite waiting --conditions H2`. Frozen-snapshot evaluation also compares individual problem witnesses with joint consistency; it is an offline diagnostic ablation, not a full-task performance claim. Use an episode as the statistical unit and record reviewer identities separately for a real human study.
+
+### CUBE transfer check
+
+`third_party/coop2_cube` contains the actual [COOP2 environment source](https://github.com/HappyEureka/coop2-llm-mas), pinned in `UPSTREAM.json`, with its MIT license. The package entry point is trimmed; the environment and task rules are unchanged. The adapter reconstructs its transition model from public agent/block observations and checks simultaneous force, collision and delivery using those rules.
+
+```powershell
+python run_cube.py --condition C --agent_num 3 --grid_size 9 --block_specs 2:1 --step_num 30 --results_dir results\cube --no_plot
+python scripts\run_experiments.py --environment cube --conditions A B C H2 --agent_num 3 --grid_size 9 --block_specs 2:1 --seeds 4 5 6 --step_num 30 --dry_run
+```
+
+The CUBE planner is an AgentScope agent with a small action schema. It uses the common bounded review/commit protocol and CUBE-specific push diagnostics; it does not import Crafter's crafting goals. Neither environment adapter promises general multi-step planning or future unobserved outcomes.
+
+Implementation and validation details: [completed framework](docs/implementation_2026-11-16.md).
 
 ## Relation to the original DAMCS project
 
@@ -229,6 +308,12 @@ Main differences from the paper/original upstream project:
 - Some GUI and helper scripts are retained for visualization and debugging, so this repository is closer to a reproducible course/project implementation than a minimal paper artifact.
 
 ## Verification without an LLM
+
+Run the complete mechanism suite without provider calls:
+
+```powershell
+python -B -m unittest discover -s scripts -p "smoke_*.py"
+```
 
 Check the AgentScope integration without credentials or LLM API requests. The check uses local mock HTTP responses with the real AgentScope model adapters, message formatter, and agents:
 
