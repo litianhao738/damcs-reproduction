@@ -149,20 +149,90 @@ def get_llm_config() -> LLMConfig:
             ),
         )
 
+    if provider == "compatible":
+        # Any OpenAI-compatible chat endpoint (DeepSeek, Kimi, GLM, ...).
+        missing = [name for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_CHAT_MODEL") if not _env(name)]
+        if missing:
+            raise LLMConfigurationError(
+                "An OpenAI-compatible provider is selected but missing environment variables: "
+                + ", ".join(missing)
+            )
+        return LLMConfig(
+            provider=provider,
+            chat_model=_env("LLM_CHAT_MODEL"),
+            embedding_model=_env("EMBEDDING_MODEL", ""),
+            openai_api_key=_env("LLM_API_KEY"),
+            openai_base_url=_env("LLM_BASE_URL"),
+        )
+
     raise LLMConfigurationError(
-        f"Unsupported LLM_PROVIDER '{provider}'. Use 'azure', 'openai', or 'qwen'."
+        f"Unsupported LLM_PROVIDER '{provider}'. Use 'azure', 'openai', 'qwen', or 'compatible'."
     )
+
+
+EMBEDDING_OVERRIDE_VARIABLES = ("EMBEDDING_API_KEY", "EMBEDDING_BASE_URL", "EMBEDDING_MODEL")
+
+
+def get_embedding_override() -> LLMConfig | None:
+    """Embedding endpoint configured separately from the chat provider.
+
+    Experiments compare chat models while keeping one embedding model, so any
+    ``EMBEDDING_*`` variable switches embedding calls to that endpoint.
+    """
+    values = {name: _env(name) for name in EMBEDDING_OVERRIDE_VARIABLES}
+    if not any(values.values()):
+        return None
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise LLMConfigurationError(
+            "A separate embedding endpoint is partly configured; missing: " + ", ".join(missing)
+        )
+    return LLMConfig(
+        provider="embedding",
+        chat_model="",
+        embedding_model=values["EMBEDDING_MODEL"],
+        openai_api_key=values["EMBEDDING_API_KEY"],
+        openai_base_url=values["EMBEDDING_BASE_URL"],
+    )
+
+
+def json_mode(config: LLMConfig) -> str:
+    """``json_object``: ask for JSON, validate locally and retry with the error.
+    ``structured``: provider-enforced structured output (OpenAI and Azure)."""
+    default = "structured" if config.provider in ("openai", "azure") else "json_object"
+    mode = (_env("LLM_JSON_MODE", default) or default).lower()
+    if mode not in ("json_object", "structured"):
+        raise LLMConfigurationError("LLM_JSON_MODE must be 'json_object' or 'structured'.")
+    return mode
+
+
+def generate_kwargs() -> dict[str, Any]:
+    """Extra chat request fields shared by every call, e.g. temperature or
+    a provider switch that turns thinking off, given as a JSON object."""
+    value = _env("LLM_GENERATE_KWARGS")
+    if value is None:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise LLMConfigurationError(f"LLM_GENERATE_KWARGS is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise LLMConfigurationError("LLM_GENERATE_KWARGS must be a JSON object.")
+    return parsed
 
 
 def describe_llm_configuration() -> dict[str, Any]:
     provider = (_env("LLM_PROVIDER", "azure") or "azure").lower()
     try:
         config = get_llm_config()
+        embedding = get_embedding_override()
         return {
             "configured": True,
             "provider": config.provider,
             "chat_model": config.chat_model,
-            "embedding_model": config.embedding_model,
+            "embedding_model": embedding.embedding_model if embedding else config.embedding_model,
+            "embedding_endpoint": "separate" if embedding else "chat provider",
+            "json_mode": json_mode(config),
             "missing": [],
         }
     except LLMConfigurationError as exc:
@@ -180,6 +250,8 @@ def describe_llm_configuration() -> dict[str, Any]:
             "qwen": []
             if _env("QWEN_API_KEY", _env("DASHSCOPE_API_KEY"))
             else ["QWEN_API_KEY or DASHSCOPE_API_KEY"],
+            "compatible": [name for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_CHAT_MODEL")
+                           if not _env(name)],
         }
         return {
             "configured": False,
@@ -188,6 +260,8 @@ def describe_llm_configuration() -> dict[str, Any]:
             if provider == "azure"
             else _env("QWEN_CHAT_MODEL", _env("OPENAI_MODEL", "qwen3.7-plus"))
             if provider == "qwen"
+            else _env("LLM_CHAT_MODEL")
+            if provider == "compatible"
             else _env("OPENAI_MODEL", "gpt-4o"),
             "embedding_model": _env(
                 "AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
@@ -260,13 +334,22 @@ def get_chat_model() -> OpenAIChatModel:
         stream=False,
         client_type="azure" if is_azure else "openai",
         client_kwargs=_client_kwargs(config),
+        generate_kwargs=generate_kwargs(),
     )
 
 
 @lru_cache(maxsize=1)
 def get_embedding_model() -> OpenAITextEmbedding:
-    """AgentScope text embedding model for the configured provider."""
-    config = get_llm_config()
+    """AgentScope text embedding model: the separate ``EMBEDDING_*`` endpoint
+    when configured, otherwise the chat provider's own embedding model."""
+    config = get_embedding_override()
+    if config is None:
+        config = get_llm_config()
+        if config.provider == "compatible":
+            raise LLMConfigurationError(
+                "The OpenAI-compatible chat provider has no embedding endpoint here; set "
+                + ", ".join(EMBEDDING_OVERRIDE_VARIABLES) + "."
+            )
     is_azure = config.provider == "azure"
     api_key = config.azure_api_key if is_azure else config.openai_api_key
     dimensions = _env_int("LLM_EMBEDDING_DIMENSIONS", None)
@@ -626,7 +709,7 @@ async def aget_completion(messages, model=None) -> ResponseEvent:
             config = get_llm_config()
             chat_model = get_chat_model()
             overrides = {"model": model} if model else {}
-            if config.provider == "qwen":
+            if json_mode(config) == "json_object":
                 response = await measured_model_call('chat', chat_model,
                     _with_json_schema_instruction(current_messages),
                     response_format={"type": "json_object"},
@@ -638,8 +721,9 @@ async def aget_completion(messages, model=None) -> ResponseEvent:
                     return _parse_response_event_content(content)
                 except (ValidationError, json.JSONDecodeError) as e:
                     if attempt < max_retries - 1:
+                        MODEL_USAGE['chat_json_retries'] += 1
                         print_color(
-                            f"Qwen response validation failed, retrying with correction... (attempt {attempt+1})",
+                            f"Response validation failed, retrying with correction... (attempt {attempt+1})",
                             color="yellow",
                         )
                         current_messages = [

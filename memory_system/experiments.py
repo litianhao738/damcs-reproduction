@@ -39,9 +39,11 @@ def experiment_config(args, environment):
         'git_head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root).decode().strip(),
         'source_sha256': hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest(),
         'source_files': source,
+        # Model names and settings only; keys are never recorded.
         'models': {key: os.getenv(key) for key in (
-            'LLM_PROVIDER', 'OPENAI_MODEL', 'OPENAI_EMBEDDING_MODEL',
-            'QWEN_CHAT_MODEL', 'QWEN_EMBEDDING_MODEL',
+            'MODEL_PROFILE', 'LLM_PROVIDER', 'OPENAI_MODEL', 'OPENAI_EMBEDDING_MODEL',
+            'QWEN_CHAT_MODEL', 'QWEN_EMBEDDING_MODEL', 'LLM_CHAT_MODEL', 'LLM_BASE_URL',
+            'EMBEDDING_MODEL', 'EMBEDDING_BASE_URL', 'LLM_JSON_MODE', 'LLM_GENERATE_KWARGS',
             'AZURE_OPENAI_CHAT_DEPLOYMENT', 'AZURE_OPENAI_EMBEDDING_DEPLOYMENT',
         )},
         'execution_guard': True,

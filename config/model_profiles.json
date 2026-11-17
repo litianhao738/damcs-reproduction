@@ -1,0 +1,68 @@
+{
+  "_comment": "Shared model settings for the experiment tables. Fill every empty model name and price before running; keys never go here (see local_config/api_keys.json). Check base URLs and vision-capable model names against each vendor's official docs.",
+  "currency": "CNY",
+  "runtime": {
+    "LLM_TIMEOUT_SECONDS": 120,
+    "LLM_MAX_RETRIES": 2,
+    "LLM_MAX_TOKENS": 4096
+  },
+  "shared_generate_kwargs": {},
+  "embedding": {
+    "api_key_env": "QWEN_API_KEY",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "text-embedding-v4",
+    "price_per_million_tokens": null
+  },
+  "profiles": {
+    "qwen": {
+      "provider": "qwen",
+      "model": "qwen3.7-plus",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "QWEN_API_KEY",
+      "tier": "",
+      "input_price_per_million_tokens": null,
+      "output_price_per_million_tokens": null,
+      "generate_kwargs": {}
+    },
+    "deepseek": {
+      "provider": "compatible",
+      "model": "",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "tier": "",
+      "input_price_per_million_tokens": null,
+      "output_price_per_million_tokens": null,
+      "generate_kwargs": {}
+    },
+    "kimi": {
+      "provider": "compatible",
+      "model": "",
+      "base_url": "https://api.moonshot.cn/v1",
+      "api_key_env": "MOONSHOT_API_KEY",
+      "tier": "",
+      "input_price_per_million_tokens": null,
+      "output_price_per_million_tokens": null,
+      "generate_kwargs": {}
+    },
+    "glm": {
+      "provider": "compatible",
+      "model": "",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "api_key_env": "ZHIPU_API_KEY",
+      "tier": "",
+      "input_price_per_million_tokens": null,
+      "output_price_per_million_tokens": null,
+      "generate_kwargs": {}
+    },
+    "gpt": {
+      "provider": "compatible",
+      "model": "",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "tier": "",
+      "input_price_per_million_tokens": null,
+      "output_price_per_million_tokens": null,
+      "generate_kwargs": {}
+    }
+  }
+}

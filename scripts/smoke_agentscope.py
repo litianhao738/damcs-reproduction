@@ -40,6 +40,9 @@ class AgentScopeIntegrationChecks(unittest.TestCase):
             "AZURE_OPENAI_API_VERSION": "2024-10-21",
             "LLM_MAX_RETRIES": "1",
             "LLM_EMBEDDING_DIMENSIONS": "",
+            # Start each check from the chat provider's own embedding and defaults.
+            "EMBEDDING_API_KEY": "", "EMBEDDING_BASE_URL": "", "EMBEDDING_MODEL": "",
+            "LLM_JSON_MODE": "", "LLM_GENERATE_KWARGS": "",
         })
         env_patch.start()
         self.addCleanup(env_patch.stop)
@@ -135,6 +138,49 @@ class AgentScopeIntegrationChecks(unittest.TestCase):
 
     def test_qwen_chat_and_embedding(self):
         self.check_provider("qwen")
+
+    def use_compatible(self, separate_embedding=True):
+        os.environ.update({"LLM_PROVIDER": "compatible", "LLM_API_KEY": "offline-test-key",
+                           "LLM_BASE_URL": "https://compatible.invalid/v1", "LLM_CHAT_MODEL": "vendor-vision"})
+        if separate_embedding:
+            os.environ.update({"EMBEDDING_API_KEY": "offline-embedding-key",
+                               "EMBEDDING_BASE_URL": "https://embedding.invalid/v1",
+                               "EMBEDDING_MODEL": "shared-embedding"})
+
+    def test_compatible_chat_uses_json_mode_and_separate_embedding(self):
+        self.use_compatible()
+        os.environ["LLM_GENERATE_KWARGS"] = '{"temperature": 0.3}'
+        plan = llm_api.get_completion([Msg("environment", "Collect wood.", "user")])
+        self.assertEqual(plan.action.final_next_action.value, "Navigator")
+        chat = self.requests[-1]
+        self.assertEqual(chat["url"].host, "compatible.invalid")
+        self.assertEqual(chat["body"]["model"], "vendor-vision")
+        self.assertEqual(chat["body"]["response_format"]["type"], "json_object")
+        self.assertEqual(chat["body"]["temperature"], 0.3)
+        llm_api.run_async(llm_api.get_embedding_model()(["offline embedding"]))
+        embedding = self.requests[-1]
+        self.assertEqual((embedding["url"].host, embedding["body"]["model"]),
+                         ("embedding.invalid", "shared-embedding"))
+        report = llm_api.describe_llm_configuration()
+        self.assertEqual((report["embedding_endpoint"], report["json_mode"]), ("separate", "json_object"))
+        self.assertNotIn("offline-test-key", json.dumps(report))
+
+    def test_compatible_chat_without_embedding_endpoint_fails_clearly(self):
+        self.use_compatible(separate_embedding=False)
+        with self.assertRaisesRegex(llm_api.LLMConfigurationError, "EMBEDDING_API_KEY"):
+            llm_api.get_embedding_model()
+        os.environ["EMBEDDING_MODEL"] = "shared-embedding"
+        with self.assertRaisesRegex(llm_api.LLMConfigurationError, "partly configured"):
+            llm_api.get_embedding_override()
+
+    def test_json_mode_retry_is_counted(self):
+        self.use_compatible()
+        os.environ["LLM_MAX_RETRIES"] = "2"
+        self.invalid_chat_responses = 1
+        before = llm_api.get_model_usage().get("chat_json_retries", 0)
+        with redirect_stdout(io.StringIO()):
+            llm_api.get_completion([Msg("environment", "Collect wood.", "user")])
+        self.assertEqual(llm_api.get_model_usage()["chat_json_retries"], before + 1)
 
     def test_embedding_dimensions_override(self):
         os.environ["LLM_EMBEDDING_DIMENSIONS"] = "2"
