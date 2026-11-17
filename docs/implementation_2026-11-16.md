@@ -32,7 +32,21 @@ MA-Crafter 继续使用原有 DAMCS 分层记忆、AgentScope Agent、导航和�
 
 `repair_scopes.py` 固定待恢复的制造/采集事件，枚举有限修改域，并按照真实的“先分享、再逐 Agent 执行动作”顺序联合投影。验证同时检查选定目标与未编辑计划原本可验证的工作；不会以全部等待作为修复。
 
-选择依据依次为覆盖的即时目标数、采集目标数、编辑 Agent 数、修改字段数。K 限制真正可编辑的 Agent 数，不限制人可以阅读的关联信息。默认 K=2，可切换为 1。
+选择依据依次为覆盖的即时目标数、采集目标数、编辑 Agent 数、修改字段数，即先修得全，再改得少。
+
+2026-11-17 起，搜索默认不设编辑人数上限，按人数逐级加深：
+
+- 1–2 人的范围总是完整搜索，H0/H1 等固定小范围策略仍能看到其中全部候选。
+- 更大的范围只在还没有候选覆盖全部目标时继续搜索。一旦有候选覆盖全部目标，更大的范围只会多改人、不会被选中，所以停止。
+- 联合检查总数超过预算 `ASSIGNMENT_BUDGET`（5 万次，Crafter 中约 4 秒）时停止，并在 `search_stop=assignment_budget` 中记录。
+- 每次分析记录 `max_scope_agents`、`searched_scope_agents` 和 `search_stop`。
+
+字段权限不变：只能改计划字段，不能改库存或环境，不可编辑的 Agent 不进入搜索。
+
+现在有两个独立参数：
+
+- `--scope_max_agents`（K）：搜索上限，默认不限。可设为 1 或 2，作为消融对照。
+- `--review_max_agents`：一次人审最多开放的 Agent 数，默认 2，表示人的阅读上限。可修复范围超过该值时不发人审，记录 `review_skipped` 的 `over_review_capacity` 原因，然后走同一个自动后备分支。
 
 自动分支使用同一份候选。人审批准并不代表恢复成功；只有实际执行产生对应成就或推块事件，才记为局部恢复。最后采到钻石或交付全部方块，另记为任务成功。
 
@@ -61,12 +75,14 @@ CUBE 当前保留完整公开棋盘为一个事实组，不宣称已实现 CUBE 
 可用 `--reviewer scripted` 和 `--scripted_delay_steps` 检查固定延迟流程。此模式明确标记 `provider=scripted`，阅读时间为 0，不能进入真人增益统计。脚本采用建议本质上仍是自动选择，适合验证系统行为。
 
 ```powershell
-python run.py --condition H2 --agent_num 6 --step_num 350 --human_requests 3 --scope_max_agents 2 --pause_mode local --results_dir results\human_h2 --no_plot
+python run.py --condition H2 --agent_num 6 --step_num 350 --human_requests 3 --review_max_agents 2 --pause_mode local --results_dir results\human_h2 --no_plot
 ```
 
 需要单独运行表单服务时，使用 `python scripts\review_server.py --results_dir results\human_h2 --port 8765`，并将运行器的 `--review_port` 设为 0。
 
 ## 4. 对比与消融入口
+
+正式要跑的三张表（主实验、部件消融、跨模型对比）及其统一设置、指标和运行前待办，见 [实验表设计](experiment_tables_2026-11-17.md)。
 
 | 条件 | 最终行为 |
 | --- | --- |
