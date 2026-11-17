@@ -13,10 +13,11 @@ CONDITIONS = {
     'A': ('diagnose', 0, 'off', 'verified'),
     'B': ('repair', 2, 'off', 'verified'),
     'C': ('repair', 2, 'auto', 'verified'),
-    # Human review opens either the problem owner (H0) or the verified repair scope (H2).
-    # The former H1 (whole related group, all fields) was dropped on 2026-11-17: its
-    # free-form group edits were hard to quantify.
-    'H0': ('repair', 2, 'human', 'owner'),
+    # Human review opens either the problem owner (H1) or the verified repair scope (H2).
+    # On 2026-11-17 the old related-group condition (then called H1, all fields open)
+    # was dropped because its free-form group edits were hard to quantify, and the
+    # problem-owner condition was renamed from H0 to H1.
+    'H1': ('repair', 2, 'human', 'owner'),
     'H2': ('repair', 2, 'human', 'verified'),
 }
 

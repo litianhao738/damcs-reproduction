@@ -29,8 +29,8 @@ class ExperimentChecks(unittest.TestCase):
         rows = build_matrix(args)
         self.assertEqual(len(rows), 20)
         self.assertEqual(len({row['run_id'] for row in rows}), 20)
-        self.assertEqual({row['condition'] for row in rows}, {'A', 'B', 'C', 'H0', 'H2'})
-        for condition in ('A', 'B', 'C', 'H0', 'H2'):
+        self.assertEqual({row['condition'] for row in rows}, {'A', 'B', 'C', 'H1', 'H2'})
+        for condition in ('A', 'B', 'C', 'H1', 'H2'):
             self.assertEqual({(row['seed'], row['repeat_id']) for row in rows if row['condition'] == condition},
                              {(4, 0), (4, 1), (5, 0), (5, 1)})
 
