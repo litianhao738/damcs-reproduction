@@ -643,8 +643,11 @@ def get_arg_parser():
                              "environment's fixed list of critical problems. 'all': every problem (practice).")
     parser.add_argument('--review_cooldown', type=int, default=10,
                         help='Steps before the same problem may be asked about again (default: 10).')
-    parser.add_argument('--stall_steps', type=int, default=30,
-                        help='Steps without team progress before every open problem counts as critical (default: 30).')
+    parser.add_argument('--stall_fraction', type=float, default=0.1,
+                        help='Share of the episode length without team progress before every open problem '
+                             'counts as critical (default: 0.1, i.e. 35 of 350 steps, 3 of 30).')
+    parser.add_argument('--stall_steps', type=int, default=None,
+                        help='Fixed number of steps for the stall signal; overrides --stall_fraction.')
     parser.add_argument('--review_strategy', choices=['verified', 'owner'], default='verified',
                         help="Which agents a review opens: 'verified' repair scope (H2) or problem 'owner' (H1).")
     parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='global')

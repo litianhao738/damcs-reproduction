@@ -49,6 +49,19 @@ def choose_review_scope(analysis, strategy, capacity):
 
 
 REVIEW_TRIGGERS = ("signals", "stage", "all")
+# Steps without team progress that count as stalled, as a share of the episode length.
+DEFAULT_STALL_FRACTION = 0.1
+# Used only when the episode length is unknown.
+FALLBACK_STALL_STEPS = 30
+
+
+def stall_window(stall_steps, stall_fraction, step_limit):
+    """Steps without team progress before the stall signal fires."""
+    if stall_steps is not None:
+        return stall_steps
+    if step_limit:
+        return max(1, round(stall_fraction * step_limit))
+    return FALLBACK_STALL_STEPS
 # Per-problem check results that mean "known not to be solved by this edit".
 KNOWN_FAILURES = frozenset({"violated", "infeasible"})
 
@@ -70,7 +83,7 @@ class InterventionController:
                  request_budget=None, timeout=120, pause_mode="global", evidence_mode="compact",
                  clock=time.monotonic, revalidation="incremental", environment="crafter",
                  search_agents=None, selection="minimal", review_trigger="signals", review_cooldown=10,
-                 stall_steps=30):
+                 stall_steps=None, stall_fraction=DEFAULT_STALL_FRACTION, step_limit=None):
         """``capacity``: most agents one review may open. ``search_agents``: cap on the
         automatic repair search (None searches the smallest sufficient scope, uncapped).
         ``selection``: ``minimal`` or the ``any`` ablation. ``revalidation``:
@@ -85,7 +98,10 @@ class InterventionController:
           (1) ``choice``: verified repairs exist that change different agents, so someone
           must weigh whom to divert; (2) ``unknown``: no repair could be verified because
           facts are missing; or (3) ``stalled``: team progress (from the environment
-          adapter) has not grown for ``stall_steps`` steps.
+          adapter) has not grown for ``stall_steps`` steps. By default that is
+          ``stall_fraction`` of the episode's ``step_limit`` (10%: 35 of 350 Crafter
+          steps, 3 of 30 CUBE steps), so the rule scales with episode length; an
+          explicit ``stall_steps`` overrides it.
         - ``"stage"``: the adapter's fixed list of critical problems.
         - ``"all"``: every problem (practice episodes).
 
@@ -103,7 +119,8 @@ class InterventionController:
         self.search_agents, self.selection = search_agents, selection
         self.request_budget, self.timeout = request_budget, timeout
         self.review_trigger, self.review_cooldown = review_trigger, review_cooldown
-        self.stall_steps = stall_steps
+        self.stall_fraction, self.step_limit = stall_fraction, step_limit
+        self.stall_steps = stall_window(stall_steps, stall_fraction, step_limit)
         self.last_asked = {}
         # Team progress and the last step it grew, for the stall signal.
         self.progress, self.last_progress_step = None, 0
@@ -524,7 +541,8 @@ class InterventionController:
                    "pause_mode": self.pause_mode, "evidence_mode": self.evidence_mode,
                    "revalidation": self.revalidation, "environment": self.adapter.name,
                    "review_trigger": self.review_trigger, "review_cooldown": self.review_cooldown,
-                   "stall_steps": self.stall_steps}
+                   "stall_steps": self.stall_steps, "stall_fraction": self.stall_fraction,
+                   "step_limit": self.step_limit}
         summary['validation_counts'] = dict(self.validation_counts)
         summary['validation_seconds'] = self.validation_seconds
         summary['review_preparation_seconds'] = self.review_preparation_seconds

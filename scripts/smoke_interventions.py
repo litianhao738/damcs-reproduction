@@ -156,6 +156,17 @@ class InterventionChecks(unittest.TestCase):
         self.prepare(controller)
         self.assertEqual(self.request_document(controller)['trigger_signals'], {'0:make:wood_pickaxe': ['stalled']})
 
+    def test_stall_window_scales_with_episode_length(self):
+        def window(**kwargs):
+            return InterventionController(self.output, mode='human', **kwargs).stall_steps
+
+        self.assertEqual(window(step_limit=350), 35)
+        self.assertEqual(window(step_limit=30), 3)
+        self.assertEqual(window(step_limit=5), 1)
+        self.assertEqual(window(step_limit=350, stall_fraction=0.2), 70)
+        self.assertEqual(window(step_limit=350, stall_steps=12), 12)
+        self.assertEqual(window(), 30)  # episode length unknown
+
     def test_team_progress_resets_the_stall_clock(self):
         controller = self.signal_controller(stall_steps=30)
         before = [{'achievements': {'collect_wood': 0}}]

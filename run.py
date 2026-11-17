@@ -45,7 +45,7 @@ class CompleteMulitAgentSimulation:
         if self.intervention is None and scope_mode in ('auto', 'human'):
             self.intervention = InterventionController(agents[0].agent_dir.parent,
                                                        mode=scope_mode, search_agents=scope_max_agents,
-                                                       selection=scope_selection)
+                                                       selection=scope_selection, step_limit=max_steps)
         self.execution_guard = execution_guard
         self.review_step_seconds = review_step_seconds
         self.reviewer = reviewer
@@ -242,6 +242,7 @@ def main():
             capacity=args.review_max_agents, search_agents=args.scope_max_agents,
             selection=args.scope_selection, request_budget=args.human_requests,
             review_trigger=args.review_trigger, review_cooldown=args.review_cooldown, stall_steps=args.stall_steps,
+            stall_fraction=args.stall_fraction, step_limit=num_steps,
             timeout=args.review_timeout, pause_mode=args.pause_mode, evidence_mode=args.evidence_mode,
             revalidation=args.revalidation,
         )

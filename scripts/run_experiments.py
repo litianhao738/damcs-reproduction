@@ -88,7 +88,8 @@ def build_matrix(args):
                    '--review_max_agents', str(args.review_max_agents),
                    *(['--human_requests', str(args.human_requests)] if args.human_requests is not None else []),
                    '--review_trigger', args.review_trigger, '--review_cooldown', str(args.review_cooldown),
-                   '--stall_steps', str(args.stall_steps),
+                   '--stall_fraction', str(args.stall_fraction),
+                   *(['--stall_steps', str(args.stall_steps)] if args.stall_steps is not None else []),
                    '--evidence_mode', s['evidence_mode'], '--pause_mode', s['pause_mode'],
                    '--revalidation', s['revalidation'], '--scope_selection', s['scope_selection'],
                    '--reviewer', s['reviewer'], '--reviewer_id', args.reviewer_id,
@@ -108,7 +109,8 @@ def build_matrix(args):
                'scope_selection': s['scope_selection'], 'evidence_mode': s['evidence_mode'],
                'pause_mode': s['pause_mode'], 'revalidation': s['revalidation'],
                'human_requests': args.human_requests, 'review_trigger': args.review_trigger,
-               'review_cooldown': args.review_cooldown, 'stall_steps': args.stall_steps, 'step_limit': args.step_num}
+               'review_cooldown': args.review_cooldown, 'stall_steps': args.stall_steps,
+               'stall_fraction': args.stall_fraction, 'step_limit': args.step_num}
         if profile:
             run.update(profile_record(profile, settings_file))
         matrix.append(run)
@@ -162,7 +164,7 @@ def summarize_run(directory, step_limit=None):
     skipped = Counter(event.get('reason') for event in events if event['event'] == 'review_skipped')
     row = {key: config.get(key) for key in (
         'environment', 'condition', 'seed', 'repeat_id', 'reviewer', 'reviewer_id', 'scope_max_agents',
-        'review_max_agents', 'scope_selection', 'human_requests', 'review_trigger', 'review_cooldown', 'stall_steps',
+        'review_max_agents', 'scope_selection', 'human_requests', 'review_trigger', 'review_cooldown', 'stall_steps', 'stall_fraction',
         'evidence_mode', 'pause_mode',
         'revalidation', 'source_sha256', 'git_head',
     )}
@@ -240,8 +242,10 @@ def get_parser():
                              "'all' is for practice.")
     parser.add_argument('--review_cooldown', type=int, default=10,
                         help='Steps before the same problem may be asked about again.')
-    parser.add_argument('--stall_steps', type=int, default=30,
-                        help='Steps without team progress before open problems count as critical.')
+    parser.add_argument('--stall_fraction', type=float, default=0.1,
+                        help='Share of the episode length without team progress before open problems count as critical.')
+    parser.add_argument('--stall_steps', type=int, default=None,
+                        help='Fixed stall window in steps; overrides --stall_fraction.')
     parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='local')
     parser.add_argument('--evidence_mode', choices=['full', 'compact'], default='compact')
     parser.add_argument('--revalidation', choices=['incremental', 'full', 'none'], default='incremental')
