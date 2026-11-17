@@ -12,13 +12,17 @@ from memory_system.agent import ActionStatus
 import crafter
 from memory_system.agent import Agent, HumanAgent
 from plot import Plotter
+import json
 import pandas as pd
 import os
 from pathlib import Path
 import time
 from memory_system.intervention import InterventionController, write_json
 from memory_system.review_server import ReviewServer
-from memory_system.llm_api import get_model_usage
+from memory_system.llm_api import MODEL_USAGE, get_model_usage
+from memory_system.checkpoint import (
+    CheckpointError, load_checkpoint, remove_checkpoint, save_checkpoint, trim_after_checkpoint,
+)
 from memory_system.experiments import apply_condition, experiment_config, ScriptedReviewer
 
 MAX_STEPS = 350
@@ -30,7 +34,13 @@ class CompleteMulitAgentSimulation:
     def __init__(self, agents, env, max_steps, n_players,
                  coordination_mode="repair", repair_rounds=2, coordination_log=None,
                  scope_mode="suggest", scope_max_agents=None, intervention=None,
-                 execution_guard=None, review_step_seconds=1.0, reviewer=None, scope_selection="minimal"):
+                 execution_guard=None, review_step_seconds=1.0, reviewer=None, scope_selection="minimal",
+                 checkpoint_dir=None, checkpoint_every=0, source_sha256=None, resume_state=None):
+        """``checkpoint_every``: save the whole running state to ``checkpoint_dir`` every
+        that many steps (0 disables). ``resume_state``: a loaded checkpoint to continue from;
+        its environment, agents and controller must be the ones passed in."""
+        self.checkpoint_dir, self.checkpoint_every = checkpoint_dir, checkpoint_every
+        self.source_sha256, self.resume_state = source_sha256, resume_state
         self.agents = agents
         self.env = env
         self.max_steps = max_steps
@@ -60,15 +70,26 @@ class CompleteMulitAgentSimulation:
 
     def run_simulation(self):
         """Run the complete simulation with progress tracking"""
-        total_step = 0
-        _step = 0
-        obs = self.env.reset()
-        done = False
-        episode_number = 0
-        info = None
-        usage_before = get_model_usage()
-        
-        with tqdm(total=self.max_steps, desc="Progress") as bar:
+        if self.resume_state is not None:
+            loop = self.resume_state["loop"]
+            total_step, _step, done = loop["total_step"], loop["step"], loop["done"]
+            obs, info, rewards = loop["obs"], loop["info"], loop["rewards"]
+            episode_number = loop["episode_number"]
+            usage_before = self.resume_state["usage_before"]
+            # Model usage continues from the checkpoint; calls made after it by the
+            # interrupted run are not counted.
+            MODEL_USAGE.clear()
+            MODEL_USAGE.update(self.resume_state["model_usage"])
+        else:
+            total_step = 0
+            _step = 0
+            obs = self.env.reset()
+            done = False
+            episode_number = 0
+            info = None
+            usage_before = get_model_usage()
+
+        with tqdm(total=self.max_steps, desc="Progress", initial=total_step) as bar:
             while total_step < self.max_steps and not done:
                 if self.intervention is not None and info is not None:
                     if self.reviewer is not None:
@@ -131,6 +152,17 @@ class CompleteMulitAgentSimulation:
                 total_step += 1
                 _step += 1
                 bar.update(1)
+                if (self.checkpoint_dir is not None and self.checkpoint_every
+                        and total_step % self.checkpoint_every == 0 and not done
+                        and total_step < self.max_steps
+                        and (self.intervention is None or self.intervention.pending is None)):
+                    save_checkpoint(self.checkpoint_dir, {
+                        "source_sha256": self.source_sha256, "step": total_step,
+                        "loop": {"total_step": total_step, "step": _step, "done": done, "obs": obs,
+                                 "info": info, "rewards": rewards, "episode_number": episode_number},
+                        "usage_before": usage_before, "model_usage": dict(MODEL_USAGE),
+                        "env": self.env, "agents": self.agents, "intervention": self.intervention,
+                    })
         
         self.reporter.print_simulation_complete()
         # self.reporter.print_stats(self.agents)
@@ -142,6 +174,9 @@ class CompleteMulitAgentSimulation:
         usage = {key: value - usage_before.get(key, 0) for key, value in usage_after.items()}
         if self.intervention is not None:
             write_json(self.intervention.output_dir / 'model_usage.json', usage)
+        if self.checkpoint_dir is not None:
+            # The episode finished; its checkpoint is no longer needed.
+            remove_checkpoint(self.checkpoint_dir)
 
 
         return {
@@ -221,34 +256,58 @@ def main():
             os.path.join(results_dir, f'round_{round_idx + 1}')
             if num_rounds > 1 else results_dir
         )
-        agents = initialize_agents(
-            human_agent_ids=human_agent_ids, n_players=agent_num,
-            results_dir=round_results_dir,
-        )
-        round_global_map_dir = global_map_dir
-        if global_map_dir and num_rounds > 1:
-            round_global_map_dir = os.path.join(
-                global_map_dir, f'round_{round_idx + 1}')
-        env = initialize_environment(
-            num_steps=num_steps,
-            n_players=agent_num,
-            global_map_dir=round_global_map_dir,
-            global_map_start=args.global_map_start,
-            global_map_unit=args.global_map_unit,
-            seed=args.seed,
-        )
-        intervention = InterventionController(
-            round_results_dir, mode=args.scope_mode, strategy=args.review_strategy,
-            capacity=args.review_max_agents, search_agents=args.scope_max_agents,
-            selection=args.scope_selection, request_budget=args.human_requests,
-            review_trigger=args.review_trigger, review_cooldown=args.review_cooldown, stall_steps=args.stall_steps,
-            stall_fraction=args.stall_fraction, step_limit=num_steps,
-            timeout=args.review_timeout, pause_mode=args.pause_mode, evidence_mode=args.evidence_mode,
-            revalidation=args.revalidation,
-        )
-        write_json(Path(round_results_dir) / 'config.json', {
-            **experiment_config(args, 'crafter'), 'repeat_id': args.repeat_id + round_idx,
-        })
+        round_dir = Path(round_results_dir)
+        config = {**experiment_config(args, 'crafter'), 'repeat_id': args.repeat_id + round_idx}
+        save_path = os.path.join(results_dir, f"stats_round_{round_idx+1}_agent_{agent_num}.csv")
+        if args.resume and os.path.exists(save_path) and (round_dir / 'intervention_summary.json').exists():
+            print(f"Round {round_idx+1} already finished; reusing its stats.")
+            all_stats.append(pd.read_csv(save_path))
+            continue
+        state = None
+        if args.resume:
+            try:
+                state = load_checkpoint(round_dir, config['source_sha256'])
+            except CheckpointError as error:
+                raise SystemExit(str(error))
+        if state is not None:
+            env, agents, intervention = state['env'], state['agents'], state['intervention']
+            # Forget what the interrupted run logged after the checkpoint; those steps run again.
+            trim_after_checkpoint(round_dir, state['loop']['step'] - 1, intervention.issued)
+            config_path = round_dir / 'config.json'
+            previous = json.loads(config_path.read_text(encoding='utf-8')) if config_path.exists() else config
+            previous.setdefault('resumes', []).append({'from_step': state['step'], 'time': time.time()})
+            write_json(round_dir / 'config.json', previous)
+            print(f"Resuming round {round_idx+1} from the checkpoint at step {state['step']}.")
+        else:
+            if args.resume:
+                # No checkpoint: discard partial logs of an interrupted attempt and start over.
+                trim_after_checkpoint(round_dir, -1, 0)
+            agents = initialize_agents(
+                human_agent_ids=human_agent_ids, n_players=agent_num,
+                results_dir=round_results_dir,
+            )
+            round_global_map_dir = global_map_dir
+            if global_map_dir and num_rounds > 1:
+                round_global_map_dir = os.path.join(
+                    global_map_dir, f'round_{round_idx + 1}')
+            env = initialize_environment(
+                num_steps=num_steps,
+                n_players=agent_num,
+                global_map_dir=round_global_map_dir,
+                global_map_start=args.global_map_start,
+                global_map_unit=args.global_map_unit,
+                seed=args.seed,
+            )
+            intervention = InterventionController(
+                round_results_dir, mode=args.scope_mode, strategy=args.review_strategy,
+                capacity=args.review_max_agents, search_agents=args.scope_max_agents,
+                selection=args.scope_selection, request_budget=args.human_requests,
+                review_trigger=args.review_trigger, review_cooldown=args.review_cooldown, stall_steps=args.stall_steps,
+                stall_fraction=args.stall_fraction, step_limit=num_steps,
+                timeout=args.review_timeout, pause_mode=args.pause_mode, evidence_mode=args.evidence_mode,
+                revalidation=args.revalidation,
+            )
+            write_json(round_dir / 'config.json', config)
         review_server = ReviewServer(intervention.review_dir, args.review_port) \
             if args.scope_mode == 'human' and args.reviewer == 'human' and args.review_port else None
         if review_server is not None:
@@ -264,6 +323,8 @@ def main():
             review_step_seconds=args.review_step_seconds,
             reviewer=ScriptedReviewer(args.scripted_decision, args.scripted_delay_steps)
                 if args.reviewer == 'scripted' else None,
+            checkpoint_dir=round_results_dir, checkpoint_every=args.checkpoint_every,
+            source_sha256=config['source_sha256'], resume_state=state,
         )
         try:
             results_df = simulation.run_simulation()['stats_df']
@@ -271,7 +332,6 @@ def main():
             if review_server is not None:
                 review_server.close()
         # Save stats, file name contains round number and agent number
-        save_path = os.path.join(results_dir, f"stats_round_{round_idx+1}_agent_{agent_num}.csv")
         results_df.to_csv(save_path, index=False)
         all_stats.append(results_df)
     # combine all rounds results

@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 from memory_system.experiments import CONDITIONS
 from memory_system.intervention import write_json
 from memory_system.model_profiles import episode_cost, load_profiles, profile_env, profile_record
+from memory_system.checkpoint import checkpoint_path
 
 
 def positive_int(value):
@@ -102,6 +103,8 @@ def build_matrix(args):
                         '--scope_mode', s['scope_mode'], '--review_strategy', s['review_strategy']]
         if args.environment == 'cube':
             command += ['--grid_size', str(args.grid_size), '--block_specs', args.block_specs]
+        else:
+            command += ['--checkpoint_every', str(args.checkpoint_every)]
         run = {'run_id': label, 'directory': str(directory), 'command': command,
                'environment': args.environment, 'variant': tag, 'condition': condition, 'seed': seed,
                'repeat_id': repeat, 'reviewer': s['reviewer'], 'reviewer_id': args.reviewer_id,
@@ -257,9 +260,34 @@ def get_parser():
     parser.add_argument('--grid_size', type=int, default=15)
     parser.add_argument('--block_specs', default='2:1,3:1')
     parser.add_argument('--results_dir', default='results/experiments')
+    parser.add_argument('--checkpoint_every', type=int, default=5,
+                        help='Crafter: save each episode every this many steps so it can resume (0 disables).')
+    parser.add_argument('--resume', action='store_true',
+                        help='Skip finished episodes, continue interrupted Crafter episodes from their '
+                             'checkpoint, and rerun the rest; failed attempts are kept as <dir>.failedN.')
     parser.add_argument('--dry_run', action='store_true')
     parser.add_argument('--summarize_only', action='store_true')
     return parser
+
+
+def resume_action(run):
+    """With --resume: 'done' (finished), 'resume' (has a checkpoint) or 'fresh'."""
+    directory = Path(run['directory'])
+    if read_json(directory / 'process.json').get('exit_code') == 0             and (directory / 'intervention_summary.json').exists():
+        return 'done'
+    if run['environment'] == 'crafter' and checkpoint_path(directory).exists():
+        return 'resume'
+    return 'fresh'
+
+
+def set_aside(directory):
+    """Keep a failed attempt without a checkpoint under <dir>.failedN instead of mixing its logs."""
+    number = 1
+    while directory.with_name(f'{directory.name}.failed{number}').exists():
+        number += 1
+    target = directory.with_name(f'{directory.name}.failed{number}')
+    directory.rename(target)
+    return target
 
 
 def main():
@@ -283,17 +311,29 @@ def main():
     rows = []
     for run in matrix:
         directory = Path(run['directory'])
-        if not args.summarize_only:
+        action = resume_action(run) if args.resume else 'fresh'
+        if args.summarize_only:
+            pass
+        elif action == 'done':
+            print(f"Skipping {run['run_id']} (finished)", flush=True)
+        else:
             env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
             if run.get('model_profile'):
                 env.update(profile_env(run['model_profile']))
+            if action == 'fresh' and args.resume and directory.exists() and any(directory.iterdir()):
+                print(f"Keeping the failed attempt as {set_aside(directory).name}", flush=True)
             directory.mkdir(parents=True, exist_ok=True)
-            print(f"Running {run['run_id']}", flush=True)
+            previous = read_json(directory / 'process.json') if action == 'resume' else {}
+            command = run['command'] + (['--resume'] if action == 'resume' else [])
+            print(f"{'Resuming' if action == 'resume' else 'Running'} {run['run_id']}", flush=True)
             started = perf_counter()
-            with (directory / 'console.log').open('w', encoding='utf-8') as stream:
-                process = subprocess.run(run['command'], cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, env=env)
-            write_json(directory / 'process.json', {'exit_code': process.returncode,
-                                                    'process_seconds': perf_counter() - started})
+            with (directory / 'console.log').open('a' if action == 'resume' else 'w', encoding='utf-8') as stream:
+                process = subprocess.run(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, env=env)
+            write_json(directory / 'process.json', {
+                'exit_code': process.returncode,
+                'process_seconds': previous.get('process_seconds', 0) + perf_counter() - started,
+                'attempts': previous.get('attempts', 1) + 1 if action == 'resume' else 1,
+            })
         row = {**summarize_run(directory, run.get('step_limit')), **run, **read_json(directory / 'process.json')}
         row.pop('command')
         row['episode_cost'] = episode_cost(row, row)

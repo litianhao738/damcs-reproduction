@@ -140,6 +140,16 @@ python scripts\evaluate_frozen_scopes.py --input results\main_matrix --capacitie
 
 批量输出 `episodes.csv/json` 保留完整局和技术失败，包含成功、步数、恢复、聊天与 Embedding 调用和 token、搜索时间、人工请求/时间、暂停 Agent 步数、复核次数及耗时。任务成功率应以完整局为单位，真人研究另外登记审阅者与次序；本次实现没有凭空生成统计显著性或人工收益结论。
 
+### 中断恢复（checkpoint）
+
+`memory_system/checkpoint.py` 用 pickle 保存整局运行状态：环境、Agent（含记忆与知识图谱）、人审控制器、主循环计数器、模型用量和全局随机数状态。pickle 保留对象之间的引用，恢复后 Agent 的 `env` 仍指向同一个环境对象。
+
+- **何时保存**：`run.py` 每 `--checkpoint_every`（默认 5）步写一次 `checkpoint.pkl`，先写临时文件再替换，保存中途出错不会损坏上一个存档。人审请求处理期间不保存，正常结束后删除。
+- **怎么恢复**：`--resume` 时加载存档，并删除中断那次在存档之后写下的日志行（`events.jsonl`、`coordination.jsonl`）、审阅文件和失败快照，然后从存档的下一步继续。
+- **代码版本**：存档记录源码哈希，代码改过后拒绝恢复。
+- **批量运行**：`scripts/run_experiments.py --resume` 跳过已完成的局，有存档的 Crafter 局续跑，其余从头重跑，失败的旧目录保留为 `<目录>.failedN`。CUBE 每局只有 30 步，不做局内存档。
+- **测试**：`scripts/smoke_checkpoint.py` 让一局在中途崩溃后从存档恢复，检查最终状态与不中断的运行完全一致。
+
 ## 5. CUBE 适配
 
 采用 [COOP² 官方代码](https://github.com/HappyEureka/coop2-llm-mas) 中的 CUBE 环境，固定提交 `9c53341d77ba9757af2869b5bc8840f02480cd00`。`third_party/coop2_cube/UPSTREAM.json` 保存来源；MIT 许可证随代码保留。仅精简包入口，环境物理和任务规则保持原样。

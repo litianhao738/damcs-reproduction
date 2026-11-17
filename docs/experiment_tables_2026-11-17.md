@@ -218,6 +218,23 @@ python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --condi
 python scripts\run_with_model.py --profile kimi run.py --condition A --agent_num 6 --step_num 20 --seed 4 --results_dir results\trial_kimi --no_plot
 ```
 
+### 中断后继续（checkpoint）
+
+Crafter 每局默认每 5 步把完整运行状态存到该局目录下的 `checkpoint.pkl`（`--checkpoint_every 5`，0 为关闭），包括环境、各 Agent 的记忆、人审控制器、计数器和随机数状态。人审请求处理期间不存档；一局正常结束后存档自动删除。
+
+断电、报错或手动中断后，用**原来的命令加 `--resume`** 重新运行即可：
+
+```powershell
+python scripts\run_experiments.py --model_profiles qwen --conditions A B C --seeds 4 5 6 --repeats 2 --results_dir results\table1_crafter_auto --resume
+```
+
+- 已经跑完的局直接跳过。
+- 有存档的 Crafter 局从存档那一步接着跑，存档之后被中断的那几步会重跑一次，日志里中断那次的残留会先删掉。
+- 没有存档的局（包括 CUBE，每局只有 30 步，不存档）从头重跑，原来的失败记录改名保留为 `<目录>.failedN`。
+- 存档与代码版本绑定：代码改过之后不能接着跑，会报错提示，需要从头重跑这一局。
+- 每局 `config.json` 的 `resumes` 记录了每次从第几步恢复；`process.json` 的 `attempts` 是运行次数。
+- 中断那次在存档之后的模型调用不计入 `model_usage.json`，所以花费会略低于实际支出。
+
 ## 开跑前要填写和确认的内容
 
 代码部分已经补齐。下面这些需要课题组决定或填写，不能由代码代替：

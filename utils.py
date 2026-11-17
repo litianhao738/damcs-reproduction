@@ -632,6 +632,12 @@ def get_arg_parser():
                              "agents; 'any' is the ablation that picks any verified repair (default: minimal).")
     parser.add_argument('--reviewer_id', default='',
                         help='Who reviewed this episode; recorded in config.json for the human study.')
+    parser.add_argument('--checkpoint_every', type=int, default=5,
+                        help='Crafter: save the whole running state every this many steps to '
+                             '<results_dir>/checkpoint.pkl (0 disables; default: 5).')
+    parser.add_argument('--resume', action='store_true', default=False,
+                        help='Crafter: continue from <results_dir>/checkpoint.pkl if present; refused when '
+                             'the code changed since the checkpoint was written.')
     parser.add_argument('--condition', choices=['custom', 'A', 'B', 'C', 'H1', 'H2'], default='custom')
     parser.add_argument('--seed', type=int, default=4)
     parser.add_argument('--repeat_id', type=int, default=0)

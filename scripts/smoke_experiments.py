@@ -98,6 +98,25 @@ class ExperimentChecks(unittest.TestCase):
                          (1.5, 1, 1))
         self.assertEqual((row['reply_stale_plan'], row['invalid_replies']), (1, 1))
 
+    def test_resume_skips_finished_continues_checkpointed_and_sets_failures_aside(self):
+        from scripts.run_experiments import resume_action, set_aside
+        args = get_parser().parse_args(['--conditions', 'A', 'B', 'C', '--seeds', '4',
+                                        '--results_dir', self.output.name])
+        finished, interrupted, failed = build_matrix(args)
+        self.assertIn('--checkpoint_every', finished['command'])
+        for run in (finished, interrupted, failed):
+            Path(run['directory']).mkdir(parents=True)
+        write_json(Path(finished['directory']) / 'process.json', {'exit_code': 0})
+        write_json(Path(finished['directory']) / 'intervention_summary.json', {})
+        (Path(interrupted['directory']) / 'checkpoint.pkl').write_bytes(b'')
+        write_json(Path(failed['directory']) / 'process.json', {'exit_code': 1})
+        self.assertEqual([resume_action(run) for run in (finished, interrupted, failed)],
+                         ['done', 'resume', 'fresh'])
+        kept = set_aside(Path(failed['directory']))
+        self.assertEqual(kept.name, Path(failed['directory']).name + '.failed1')
+        self.assertTrue((kept / 'process.json').exists())
+        self.assertFalse(Path(failed['directory']).exists())
+
     def test_condition_presets_and_config_capture_source_without_credentials(self):
         args = get_arg_parser().parse_args(['--condition', 'H2'])
         apply_condition(args)
