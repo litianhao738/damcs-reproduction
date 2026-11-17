@@ -48,7 +48,62 @@ class InterventionChecks(unittest.TestCase):
                 for plan in self.plans]
 
     def controller(self, **kwargs):
-        return InterventionController(self.output, **kwargs)
+        # The wood-pickaxe scenario is not a critical moment, so most checks ask for every problem.
+        return InterventionController(self.output, **{'review_trigger': 'all', **kwargs})
+
+    def use_iron_pickaxe_scenario(self):
+        """A critical moment: Agent 0 can make the iron pickaxe once Agents 1 and 2 share wood and coal."""
+        self.fixture.make_env()
+        x, y = self.fixture.players[0].pos
+        self.fixture.world[(x + 1, y + 1)] = 'furnace'
+        self.fixture.players[0].inventory['iron'] = 1
+        self.fixture.players[1].inventory['wood'] = 1
+        self.fixture.players[2].inventory['coal'] = 1
+        self.plans = [fixtures.plan(0, 'make_iron_pickaxe'), fixtures.plan(1), fixtures.plan(2)]
+        self.agents = self.fixture.agents(self.plans)
+        self.obs = self.fixture.observations()
+        self.analysis = generate_scope_candidates(self.plans, self.obs)
+
+    def test_problem_outside_critical_moments_is_repaired_without_asking(self):
+        controller = self.controller(mode='human', review_trigger='critical')
+        self.prepare(controller)
+        self.assertEqual(controller.issued, 0)
+        self.assertIsNone(controller.pending)
+        self.assertEqual(controller.commits[-1]['source'], 'auto')
+        skipped = next(event for event in self.events() if event['event'] == 'review_skipped')
+        self.assertEqual(skipped['reason'], 'not_critical')
+
+    def test_critical_moment_is_asked_without_a_request_budget(self):
+        self.use_iron_pickaxe_scenario()
+        controller = InterventionController(self.output, mode='human')
+        self.assertEqual((controller.review_trigger, controller.request_budget), ('critical', None))
+        self.prepare(controller)
+        self.assertEqual(controller.issued, 1)
+        request = json.loads((controller.review_dir / 'review_0001.json').read_text(encoding='utf-8'))
+        self.assertEqual(request['edit_agents'], [1, 2])
+        self.assertEqual([target['target_id'] for target in request['targets']], ['0:make:iron_pickaxe'])
+        self.assertIsNone(request['remaining_requests'])
+        self.respond(controller)
+        self.transition(controller)
+        self.assertEqual(self.fixture.players[0].achievements['make_iron_pickaxe'], 1)
+
+    def test_same_critical_problem_waits_for_the_cooldown(self):
+        self.use_iron_pickaxe_scenario()
+        controller = InterventionController(self.output, mode='human', review_cooldown=10)
+        self.prepare(controller)
+        self.respond(controller, decision='reject')
+        self.prepare(controller)
+        self.assertEqual(controller.issued, 1)
+        reasons = [event['reason'] for event in self.events() if event['event'] == 'review_skipped']
+        self.assertEqual(reasons, ['cooldown'])
+        # Ten steps later, with the situation changed, the same problem may be asked again.
+        self.fixture.players[0].inventory['stone'] = 1
+        self.obs = self.fixture.observations()
+        self.analysis = generate_scope_candidates(self.plans, self.obs)
+        for agent in self.agents:
+            agent.step = 10
+        self.prepare(controller)
+        self.assertEqual(controller.issued, 2)
 
     def prepare(self, controller):
         replies = controller.process(self.agents, self.obs, self.replies(), self.analysis)

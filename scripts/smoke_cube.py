@@ -1,7 +1,9 @@
 """Verify scope witnesses and the shared controller against upstream CUBE physics."""
 
 import asyncio
+from contextlib import redirect_stdout
 from dataclasses import asdict, replace
+import io
 import json
 from pathlib import Path
 import sys
@@ -49,6 +51,51 @@ class CubeChecks(unittest.TestCase):
 
     def controller(self, **kwargs):
         return InterventionController(self.directory.name, environment='cube', **kwargs)
+
+    def fake_model(self, *texts):
+        """Patch the CUBE agent's model call to return these reply texts in order."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        replies = iter(texts)
+        calls = []
+
+        async def call(kind, model, messages, **kwargs):
+            calls.append(messages)
+            return SimpleNamespace(content=[{'type': 'text', 'text': next(replies)}])
+
+        for target, value in (('memory_system.cube_agent.measured_model_call', call),
+                              ('memory_system.cube_agent.get_chat_model', lambda: None)):
+            patcher = patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return calls
+
+    def test_invalid_json_is_retried_with_the_error(self):
+        import os
+        from unittest.mock import patch
+        from memory_system.llm_api import get_model_usage
+        calls = self.fake_model('{"action": 9}', '{"action": 4, "reason": "join the push"}')
+        before = get_model_usage().get('chat_json_retries', 0)
+        with patch.dict(os.environ, {'LLM_MAX_RETRIES': '3'}), redirect_stdout(io.StringIO()):
+            reply = asyncio.run(self.agents[1](self.agents[1].context(self.obs, self.plans)))
+        self.assertEqual(reply.metadata['operation'], 'move_right')
+        self.assertEqual(len(calls), 2)
+        self.assertIn('Validation error', calls[1][-1]['content'])
+        self.assertEqual(get_model_usage()['chat_json_retries'], before + 1)
+
+    def test_failed_planning_keeps_the_previous_plan_and_is_logged(self):
+        import os
+        from unittest.mock import patch
+        self.fake_model('not json', 'still not json')
+        controller = self.controller(mode='auto')
+        simulation = CubeSimulation(self.env, self.agents, controller, 1)
+        with patch.dict(os.environ, {'LLM_MAX_RETRIES': '2'}), redirect_stdout(io.StringIO()):
+            plans = asyncio.run(simulation.plan(self.obs, self.plans, [0]))
+        self.assertEqual(plans, [self.plans[0]])
+        events = [json.loads(line) for line in (Path(self.directory.name) / 'events.jsonl').read_text().splitlines()]
+        failure = next(event for event in events if event['event'] == 'planning_failed')
+        self.assertEqual(failure['agent'], 0)
+        self.assertIn('ValidationError', failure['error'])
 
     def test_one_helper_edit_is_verified_and_pushes_the_real_block(self):
         report = self.adapter.generate(self.plans, self.obs, max_scope_agents=1)
@@ -104,7 +151,8 @@ class CubeChecks(unittest.TestCase):
         self.assertTrue(all(outcome['recovered'] for outcome in summary['outcomes']))
 
     def test_human_runner_waits_locally_then_applies_joint_plan(self):
-        controller = self.controller(mode='human', pause_mode='local')
+        # Both pushes of the block concern the same face; no cooldown so both are asked.
+        controller = self.controller(mode='human', pause_mode='local', review_cooldown=0)
         reviewer = ScriptedReviewer(delay_steps=1)
         simulation = CubeSimulation(self.env, self.agents, controller, 7, repair_rounds=0,
                                     planner=self.scripted_planner, review_step_seconds=0, reviewer=reviewer)

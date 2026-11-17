@@ -47,17 +47,25 @@ def choose_review_scope(analysis, strategy, capacity):
 
 class InterventionController:
     def __init__(self, output_dir, mode="suggest", strategy="verified", capacity=2,
-                 request_budget=3, timeout=120, pause_mode="global", evidence_mode="compact",
+                 request_budget=None, timeout=120, pause_mode="global", evidence_mode="compact",
                  clock=time.monotonic, revalidation="incremental", environment="crafter",
-                 search_agents=None, selection="minimal"):
+                 search_agents=None, selection="minimal", review_trigger="critical", review_cooldown=10):
         """``capacity``: most agents one review may open. ``search_agents``: cap on the
         automatic repair search (None searches the smallest sufficient scope, uncapped).
         ``selection``: ``minimal`` or the ``any`` ablation. ``revalidation``:
         ``incremental``, ``full``, or the ``none`` ablation, which commits a reviewed
         edit without rechecking the current state (the check still runs, only to log
-        whether it would have failed)."""
+        whether it would have failed).
+
+        Human review has no request budget by default (``request_budget=None``).
+        ``review_trigger="critical"`` asks only at critical moments, as defined by the
+        environment adapter; ``"all"`` asks for every problem (used for practice).
+        ``review_cooldown``: steps before the same problem may be asked again after a
+        request about it, so one stuck problem does not ask every step."""
         if revalidation not in ("incremental", "full", "none"):
             raise ValueError("revalidation must be 'incremental', 'full' or 'none'")
+        if review_trigger not in ("critical", "all"):
+            raise ValueError("review_trigger must be 'critical' or 'all'")
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.review_dir = self.output_dir / "reviews"
@@ -65,6 +73,8 @@ class InterventionController:
         self.mode, self.strategy, self.capacity = mode, strategy, capacity
         self.search_agents, self.selection = search_agents, selection
         self.request_budget, self.timeout = request_budget, timeout
+        self.review_trigger, self.review_cooldown = review_trigger, review_cooldown
+        self.last_asked = {}
         self.pause_mode, self.evidence_mode, self.clock = pause_mode, evidence_mode, clock
         self.revalidation = revalidation
         self.adapter = get_review_adapter(environment)
@@ -180,6 +190,33 @@ class InterventionController:
         return self._commit(agents, observations, responses, plans, targets,
                             [Plan(**edit) for edit in selected["edits"]], domains, "auto")
 
+    def _review_view(self, analysis, step):
+        """The part of a scope analysis worth a person's attention now.
+
+        Keeps the critical problems that were not asked about within the cooldown,
+        and the candidates that repair at least one of them. Returns the view and
+        ``None``, or ``None`` and the reason no review is due.
+        """
+        targets = [target for target in analysis["targets"]
+                   if self.review_trigger == "all" or self.adapter.critical(target)]
+        if not targets:
+            return None, "not_critical"
+        targets = [target for target in targets
+                   if step - self.last_asked.get(target["target_id"], -self.review_cooldown) >= self.review_cooldown]
+        if not targets:
+            return None, "cooldown"
+        wanted = {target["target_id"] for target in targets}
+        candidates = [candidate for candidate in analysis["candidates"]
+                      if wanted & set(candidate["covered_targets"])]
+        selected = analysis["selected"]
+        if selected is None or not wanted & set(selected["covered_targets"]):
+            # Same preference as the search: repair more of these problems, then edit fewer agents.
+            selected = min(candidates, key=lambda candidate: (
+                -len(wanted & set(candidate["covered_targets"])), -len(candidate["covered_targets"]),
+                len(candidate["edited_agents"]), tuple(candidate["edited_agents"]),
+            )) if candidates else None
+        return {**analysis, "targets": targets, "candidates": candidates, "selected": selected}, None
+
     def _request(self, agents, observations, responses, plans, analysis):
         """Issue one review request; return None, or the reason no request was sent."""
         started = time.perf_counter()
@@ -196,6 +233,9 @@ class InterventionController:
         goals = proposal["covered_targets"] if proposal else [target["target_id"]
                  for target in analysis["targets"] if target["agent_id"] in scope
                  or set(target["evidence_agents"]) <= set(scope)]
+        # The request is about the problems in this view; others are repaired automatically.
+        in_view = {target["target_id"] for target in analysis["targets"]}
+        goals = [goal for goal in goals if goal in in_view]
         targets = [RepairTarget(**target) for target in analysis["targets"] if target["target_id"] in goals]
         edits = [Plan(**edit) for edit in proposal["edits"]] if proposal else []
         domains = {int(key): tuple(Plan(**plan) for plan in values) for key, values in analysis["domains"].items()}
@@ -223,7 +263,8 @@ class InterventionController:
             "proposal": [asdict(edit) for edit in edits],
             "domains": {agent_id: [asdict(option) for option in options] for agent_id, options in domains.items()},
             "evidence": evidence, "snapshot": self.adapter.snapshot(observations),
-            "remaining_requests": self.request_budget - self.issued, "timeout_seconds": self.timeout,
+            "remaining_requests": None if self.request_budget is None else self.request_budget - self.issued,
+            "timeout_seconds": self.timeout,
             # Wall-clock issue time, so the review page can show the time left.
             "issued_at": time.time(),
         }
@@ -233,6 +274,8 @@ class InterventionController:
                         "proposal": edits, "evidence": evidence, "started": self.clock(),
                         "paused": set(), "goals": set(goals),
                         "certificate": self.adapter.verify(plans, observations, targets, edits, domains)}
+        for target in targets:
+            self.last_asked[target.target_id] = step
         self._pause(agents, plans, observations)
         document["pause_agents"] = sorted(self.pending["paused"])
         write_json(self.review_dir / f"{request_id}.json", document)
@@ -293,6 +336,10 @@ class InterventionController:
         return True
 
     def process(self, agents, observations, responses, analysis):
+        for response in responses:
+            if response.get("error"):
+                # The agent keeps its previous plan this step; counted as a technical failure.
+                self.event("planning_failed", agents[0].step, agent=response["id"], error=response["error"])
         plans = response_plans(agents, responses)
         if self.pending is None:
             targets = self.adapter.targets(plans, observations)
@@ -310,15 +357,17 @@ class InterventionController:
         elif self.mode == "auto":
             self._auto(agents, observations, responses, plans, analysis)
         elif self.mode == "human" and analysis is not None and analysis["targets"]:
-            exhausted = self.issued >= self.request_budget
-            skipped = 'budget_exhausted' if exhausted else \
-                self._request(agents, observations, responses, plans, analysis)
+            exhausted = self.request_budget is not None and self.issued >= self.request_budget
+            view, skipped = (None, 'budget_exhausted') if exhausted else self._review_view(analysis, agents[0].step)
+            if not skipped:
+                skipped = self._request(agents, observations, responses, plans, view)
             if skipped:
                 details = {}
                 if skipped == 'over_review_capacity':
-                    details = {'scope_agents': analysis['selected']['edited_agents'],
+                    details = {'scope_agents': view['selected']['edited_agents'],
                                'review_capacity': self.capacity}
                 self.event('review_skipped', agents[0].step, reason=skipped, **details)
+                # Everything not sent to a person, critical or not, gets the automatic repair.
                 self._auto(agents, observations, responses, plans, analysis)
         replacements = {response["id"]: Plan(**response["plan_override"]) for response in responses
                         if "plan_override" in response}
@@ -363,7 +412,8 @@ class InterventionController:
                    "task_success": self.adapter.success(info),
                    "termination_reason": reason, "mode": self.mode, "strategy": self.strategy,
                    "pause_mode": self.pause_mode, "evidence_mode": self.evidence_mode,
-                   "revalidation": self.revalidation, "environment": self.adapter.name}
+                   "revalidation": self.revalidation, "environment": self.adapter.name,
+                   "review_trigger": self.review_trigger, "review_cooldown": self.review_cooldown}
         summary['validation_counts'] = dict(self.validation_counts)
         summary['validation_seconds'] = self.validation_seconds
         summary['review_preparation_seconds'] = self.review_preparation_seconds

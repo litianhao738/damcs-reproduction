@@ -31,8 +31,18 @@ class CubeSimulation:
         replies = await asyncio.gather(*(
             self.agents[agent_id](self.agents[agent_id].context(observations, plans, feedback))
             for agent_id in agent_ids
-        ))
-        return [Plan(**reply.metadata) for reply in replies]
+        ), return_exceptions=True)
+        current = {plan.agent_id: plan for plan in plans}
+        result = []
+        for agent_id, reply in zip(agent_ids, replies):
+            if isinstance(reply, BaseException):
+                # Same as Crafter: a failed planning call keeps the agent's previous plan.
+                self.controller.event('planning_failed', self.agents[agent_id].step, agent=agent_id,
+                                      error=f'{type(reply).__name__}: {reply}')
+                result.append(current[agent_id])
+            else:
+                result.append(Plan(**reply.metadata))
+        return result
 
     async def run(self, seed=4):
         _, infos = self.env.reset(seed=seed)
@@ -113,7 +123,8 @@ def main():
     controller = InterventionController(
         output, mode=args.scope_mode, strategy=args.review_strategy, capacity=args.review_max_agents,
         search_agents=args.scope_max_agents, selection=args.scope_selection,
-        request_budget=args.human_requests, timeout=args.review_timeout, pause_mode=args.pause_mode,
+        request_budget=args.human_requests, review_trigger=args.review_trigger,
+        review_cooldown=args.review_cooldown, timeout=args.review_timeout, pause_mode=args.pause_mode,
         evidence_mode=args.evidence_mode, revalidation=args.revalidation, environment='cube',
     )
     write_json(output / 'config.json', experiment_config(args, 'cube'))

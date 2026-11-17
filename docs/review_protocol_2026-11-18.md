@@ -6,7 +6,13 @@
 
 程序在跑多智能体挖钻石（或推箱子）。当几个 AI 的计划出现协调问题、系统自己又没能解决时，会把一部分计划开放给你修改。你的任务是：在网页上看清问题，选择采用、修改或跳过，并尽快提交。
 
-每局最多问你 3 次。你审阅期间，相关的 AI 原地等待，游戏时间照常流逝，所以**审得越慢，团队损失越大**。
+系统只在**关键时刻**问你，不限次数：
+
+- 挖钻石：做铁镐缺材料，或者采铁、采钻石缺工具。前面阶段的问题由系统自动处理，不会问你。
+- 推箱子：每一次推不动箱子。
+- 同一个问题问过之后，10 步内不会重复问。
+
+所以一局里可能一次都不问，也可能问好几次，开跑后要一直留意提醒。你审阅期间，相关的 AI 原地等待，游戏时间照常流逝，所以**审得越慢，团队损失越大**。
 
 ## 2. 开跑前
 
@@ -28,10 +34,10 @@
 正式开始前，每人先跑一局练习，熟悉页面。练习局不计入结果。
 
 ```powershell
-python scripts\run_experiments.py --model_profiles qwen --conditions H2 --seeds 99 --step_num 60 --reviewer human --reviewer_id R1-practice --results_dir results\practice_R1
+python scripts\run_experiments.py --model_profiles qwen --conditions H2 --seeds 99 --step_num 60 --review_trigger all --reviewer human --reviewer_id R1-practice --results_dir results\practice_R1
 ```
 
-把 `R1` 换成自己的编号。如果 60 步内没有出现审阅请求，再跑一局或把 `--step_num` 加大。
+把 `R1` 换成自己的编号。练习局加了 `--review_trigger all`，遇到任何问题都会问你，这样前 60 步就能练到；正式运行不加这个参数，只在关键时刻问。如果 60 步内仍没有出现审阅请求，再跑一局或把 `--step_num` 加大。
 
 ## 4. 正式运行
 
@@ -107,7 +113,7 @@ python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --condi
 
 补充说明：
 
-- **"检查所选计划"可以点很多次**，不算提交，也不扣额度。
+- **"检查所选计划"可以点很多次**，不算提交。
 - **检查不通过的修改不要提交。** 提交后系统还会复核，不通过的修改一定会被拒绝，只会白白浪费时间。
 - **不要为了"用掉这次机会"而修改。** 跳过也是有效的判断。
 - 提交后无法撤回。

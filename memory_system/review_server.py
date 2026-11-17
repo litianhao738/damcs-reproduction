@@ -231,7 +231,9 @@ class ReviewHandler(BaseHTTPRequestHandler):
             f'<h1>{escape(request_id)} · 第 {request["step"]} 步</h1>{clock}'
             f'<p id="ended" class="banner alert"{"" if ended else " hidden"}>{escape(ended)}</p>'
             f'<ul>{goals}</ul>'
-            f'<p>剩余请求额度：{request["remaining_requests"]}；等待的 Agent：{request["pause_agents"]}。</p>'
+            + (f'<p>剩余请求额度：{request["remaining_requests"]}。</p>'
+               if request.get("remaining_requests") is not None else '')
+            + f'<p>等待的 Agent：{request["pause_agents"]}。</p>'
             '<p class="note">可以查看关联证据；只能修改下表授权范围。提交后的实际执行结果会单独记录。</p>'
             f'<p>{proposal_note}</p>'
             f'<form id="reply" method="post" action="/respond"><input type="hidden" name="id" value="{escape(request_id)}">'

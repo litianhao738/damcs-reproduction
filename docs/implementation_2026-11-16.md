@@ -11,7 +11,7 @@ flowchart TD
     D --> S[有限字段域生成候选，联合验证，选择可修复范围]
     S --> G{模式、请求预算与新审阅机会}
     G -->|自动模式或跳过咨询| A[自动候选]
-    G -->|人审模式且有额度| H[展示目标、权限 S、证据 E 与建议]
+    G -->|人审模式且处于关键时刻| H[展示目标、权限 S、证据 E 与建议]
     H --> P[按全局、局部 P 或继续执行策略等待]
     P --> R[收到回复，复核当前事实与计划]
     R -->|通过| C[整组计划提交]
@@ -80,12 +80,20 @@ CUBE 当前保留完整公开棋盘为一个事实组，不宣称已实现 CUBE 
 
 审阅者的操作步骤和判断标准见 [审阅规程](review_protocol_2026-11-18.md)。
 
-每个发出的请求消耗一次 B，拒绝、超时和无效回复均不返还次数。阅读/修改时间单独记录；跳过咨询使用同一个自动后备分支。默认 B=3，超时 120 秒。`--review_step_seconds` 控制等待期间每个环境步的现实时间，实验各组应保持一致。
+2026-11-17 起，人审不再设每局次数额度，改为只在关键时刻问人（`--review_trigger critical`，默认）：
+
+- 关键时刻由环境适配器定义。Crafter 是钻石链最后一段的问题：做铁镐缺材料、采铁或采钻石缺工具（`review_domains.py` 中的 `CRAFTER_CRITICAL_TARGETS`）；CUBE 的每次推箱失败都算。
+- 同一问题问过之后 `--review_cooldown`（默认 10）步内不再重复问。
+- 问人时只针对关键问题；同一步的非关键问题和所有未问人的情况都走同一个自动后备分支，事件 `review_skipped` 记录原因（`not_critical`、`cooldown`、`over_review_capacity` 等）。
+- `--review_trigger all` 对所有问题都问人，只用于练习。
+- `--human_requests` 仍可设置一个每局上限，默认不设。
+
+阅读/修改时间单独记录。超时 120 秒。`--review_step_seconds` 控制等待期间每个环境步的现实时间，实验各组应保持一致。
 
 可用 `--reviewer scripted` 和 `--scripted_delay_steps` 检查固定延迟流程。此模式明确标记 `provider=scripted`，阅读时间为 0，不能进入真人增益统计。脚本采用建议本质上仍是自动选择，适合验证系统行为。
 
 ```powershell
-python run.py --condition H2 --agent_num 6 --step_num 350 --human_requests 3 --review_max_agents 2 --pause_mode local --results_dir results\human_h2 --no_plot
+python run.py --condition H2 --agent_num 6 --step_num 350 --review_max_agents 2 --pause_mode local --results_dir results\human_h2 --no_plot
 ```
 
 需要单独运行表单服务时，使用 `python scripts\review_server.py --results_dir results\human_h2 --port 8765`，并将运行器的 `--review_port` 设为 0。

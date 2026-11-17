@@ -43,6 +43,12 @@ def _project(plans, observations):
 class CubeAdapter:
     name = 'cube'
 
+    @staticmethod
+    def critical(target):
+        # Every failed push is critical: an episode has only a few blocks, and each
+        # delivery is a direct share of the team score.
+        return True
+
     def moves(self, plans, observations):
         return {}
 

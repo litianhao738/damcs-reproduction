@@ -8,8 +8,18 @@ from .review_evidence import (
 )
 
 
+# Critical moments for human review in Crafter: the last stage of the diamond chain.
+# A problem here (no iron pickaxe, no tool for iron or diamond) blocks the team goal directly;
+# earlier problems (wood, stone, coal) are left to the automatic repair.
+CRAFTER_CRITICAL_TARGETS = frozenset({"make:iron_pickaxe", "collect:iron", "collect:diamond"})
+
+
 class CrafterAdapter:
     name = 'crafter'
+
+    @staticmethod
+    def critical(target):
+        return f"{target['kind']}:{target['subject']}" in CRAFTER_CRITICAL_TARGETS
     generate = staticmethod(generate_scope_candidates)
     verify = staticmethod(verify_joint_repair)
     dependencies = staticmethod(dependency_agents)
