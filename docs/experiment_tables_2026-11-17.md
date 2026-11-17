@@ -174,6 +174,7 @@ python scripts\run_with_model.py --profile qwen
 python scripts\run_experiments.py --model_profiles qwen --conditions A B C --seeds 4 5 6 --repeats 2 --results_dir results\table1_crafter_auto
 
 # Crafter 真人审阅：每位审阅者按分到的种子运行，审阅页面为 http://127.0.0.1:8765
+# 开跑后打开列表页并点一次"开启声音和桌面提醒"，之后保持页面打开；新请求会提醒并自动打开
 python scripts\run_experiments.py --model_profiles qwen --conditions H1 H2 --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_crafter_human_R1
 
 # CUBE

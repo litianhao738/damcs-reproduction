@@ -224,6 +224,8 @@ class InterventionController:
             "domains": {agent_id: [asdict(option) for option in options] for agent_id, options in domains.items()},
             "evidence": evidence, "snapshot": self.adapter.snapshot(observations),
             "remaining_requests": self.request_budget - self.issued, "timeout_seconds": self.timeout,
+            # Wall-clock issue time, so the review page can show the time left.
+            "issued_at": time.time(),
         }
         self.pending = {"id": request_id, "step": step, "scope": scope, "plans": plans,
                         "observations": snapshot_copy(observations), "targets": targets,

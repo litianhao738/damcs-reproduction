@@ -268,6 +268,66 @@ class InterventionChecks(unittest.TestCase):
         self.transition(controller)
         self.assertTrue(controller.outcomes[-1]['recovered'])
 
+    def serve(self, controller):
+        server = ReviewServer(controller.review_dir, 0)
+        address = server.start()
+        self.addCleanup(server.close)
+        return address
+
+    def test_review_list_polls_for_open_requests_with_time_left(self):
+        controller = self.controller(mode='human')
+        self.prepare(controller)
+        address = self.serve(controller)
+        with urlopen(address + '/') as response:
+            html = response.read().decode('utf-8')
+        self.assertIn('/api/requests', html)
+        self.assertIn('setInterval(poll, 2000)', html)
+        with urlopen(address + '/api/requests') as response:
+            data = json.loads(response.read().decode('utf-8'))
+        self.assertEqual(data['run'], self.output.name)
+        [request] = data['requests']
+        self.assertEqual((request['id'], request['status'], request['edit_agents']), ('review_0001', 'pending', [1]))
+        self.assertTrue(0 < request['remaining_seconds'] <= controller.timeout)
+        with urlopen(address + '/review?id=review_0001') as response:
+            page = response.read().decode('utf-8')
+        self.assertIn('id="countdown"', page)
+        self.assertNotIn(' disabled', page)
+
+    def post_reply(self, address):
+        from urllib.error import HTTPError
+        data = urlencode({'id': 'review_0001', 'decision': 'approve'}).encode()
+        try:
+            with urlopen(Request(address + '/respond', data=data)) as response:
+                return response.status
+        except HTTPError as error:
+            return error.code
+
+    def test_expired_request_refuses_a_late_reply(self):
+        controller = self.controller(mode='human')
+        self.prepare(controller)
+        path = controller.review_dir / 'review_0001.json'
+        request = json.loads(path.read_text(encoding='utf-8'))
+        request['issued_at'] -= controller.timeout + 1
+        write_json(path, request)
+        address = self.serve(controller)
+        with urlopen(address + '/review?id=review_0001') as response:
+            page = response.read().decode('utf-8')
+        self.assertIn('已超时', page)
+        self.assertIn(' disabled', page)
+        self.assertEqual(self.post_reply(address), 409)
+        self.assertFalse((controller.review_dir / 'review_0001.response.json').exists())
+
+    def test_ended_episode_refuses_a_reply_and_reports_why(self):
+        controller = self.controller(mode='human')
+        self.prepare(controller)
+        address = self.serve(controller)
+        controller.finish(self.transition(controller), 1, 'step_limit')
+        with urlopen(address + '/api/requests') as response:
+            [request] = json.loads(response.read().decode('utf-8'))['requests']
+        self.assertEqual((request['status'], request['status_name']), ('episode_ended', '本局已结束'))
+        self.assertEqual(self.post_reply(address), 409)
+        self.assertFalse((controller.review_dir / 'review_0001.response.json').exists())
+
     def test_pending_review_is_closed_at_episode_end_without_claiming_success(self):
         controller = self.controller(mode='human')
         self.prepare(controller)
