@@ -6,6 +6,7 @@ player action pass (shares first), not later autonomous-object/life dynamics.
 
 from dataclasses import asdict, dataclass, replace
 from itertools import combinations, product
+from math import prod
 from time import perf_counter
 
 from crafter import constants
@@ -429,7 +430,58 @@ def verify_joint_repair(plans, observations, targets, edits, allowed_domains=Non
     )
 
 
-def select_repair_scope(candidates, targets, max_scope_agents=2):
+# Scopes up to this many agents are always searched completely, so review
+# strategies that open a fixed small group still see every candidate inside it.
+COMPLETE_SCOPE_AGENTS = 2
+# Larger scopes are searched only while no witness covers every target, and
+# only while the total number of joint checks stays within this budget
+# (about 80 microseconds each in Crafter; 50k is roughly 4 seconds per step).
+ASSIGNMENT_BUDGET = 50_000
+
+
+class ScopeSearch:
+    """Agent subsets by increasing size; ``max_scope_agents=None`` sets no cap.
+
+    Selection prefers covering more targets, then editing fewer agents. Once a
+    witness covers every target, a larger scope can only edit more agents, so
+    deepening past ``COMPLETE_SCOPE_AGENTS`` stops there without changing the choice.
+    """
+
+    def __init__(self, domains, original, max_scope_agents=None, budget=None):
+        self.agents = sorted(domains)
+        self.options = {agent_id: sum(plan != original[agent_id] for plan in domains[agent_id])
+                        for agent_id in self.agents}
+        self.max_scope_agents = max_scope_agents
+        self.limit = len(self.agents) if max_scope_agents is None else min(max_scope_agents, len(self.agents))
+        self.budget = ASSIGNMENT_BUDGET if budget is None else budget
+        self.evaluated = 0
+        self.searched = 0
+        self.stop = None
+
+    def levels(self, covered_all):
+        yield [()]
+        self.evaluated += 1
+        for size in range(1, self.limit + 1):
+            level = list(combinations(self.agents, size))
+            cost = sum(prod(self.options[agent_id] for agent_id in scope) for scope in level)
+            if size > COMPLETE_SCOPE_AGENTS:
+                if covered_all():
+                    self.stop = "all_targets_covered"
+                    return
+                if self.evaluated + cost > self.budget:
+                    self.stop = "assignment_budget"
+                    return
+            self.searched = size
+            self.evaluated += cost
+            yield level
+        self.stop = "scope_limit"
+
+    def report(self):
+        return {"max_scope_agents": self.max_scope_agents, "searched_scope_agents": self.searched,
+                "search_stop": self.stop}
+
+
+def select_repair_scope(candidates, targets, max_scope_agents=None):
     priorities = {target.target_id: target.immediate for target in targets}
 
     def key(candidate):
@@ -440,13 +492,14 @@ def select_repair_scope(candidates, targets, max_scope_agents=2):
                 tuple(_plan_key(plan) for plan in candidate.edits))
 
     eligible = [candidate for candidate in candidates if candidate.status == "repairable"
-                and 0 < len(candidate.changed_fields) <= max_scope_agents]
+                and 0 < len(candidate.changed_fields)
+                and (max_scope_agents is None or len(candidate.changed_fields) <= max_scope_agents)]
     return min(eligible, key=key) if eligible else None
 
 
-def generate_scope_candidates(plans, observations, checks=None, max_scope_agents=2,
+def generate_scope_candidates(plans, observations, checks=None, max_scope_agents=None,
                               editable_agents=None):
-    """Enumerate exact changed sets once, then summarize allowed supersets."""
+    """Enumerate exact changed sets by increasing size, then summarize allowed supersets."""
     started = perf_counter()
     checks = diagnose(plans, observations) if checks is None else checks
     targets = build_repair_targets(plans, observations, checks)
@@ -454,21 +507,26 @@ def generate_scope_candidates(plans, observations, checks=None, max_scope_agents
     domains = _edit_domains(plans, observations, targets, editable) if targets else {}
     model = _JointModel(plans, observations) if targets else None
     original = {plan.agent_id: plan for plan in plans}
-    exact, witnesses = {}, {}
-    scopes = [()]
-    for size in range(1, min(max_scope_agents, len(domains)) + 1):
-        scopes.extend(combinations(sorted(domains), size))
-    for scope in scopes if targets else []:
-        choices = [tuple(plan for plan in domains[agent_id] if plan != original[agent_id])
-                   for agent_id in scope]
-        counts = {"repairable": 0, "unknown": 0, "infeasible": 0}
-        for edits in product(*choices):
-            result = model.verify(targets, edits, domains)
-            counts[result.status] += 1
-            if result.status == "repairable":
-                signature = (result.covered_targets, tuple(sorted(result.changed_fields.items())))
-                witnesses.setdefault(signature, result)
-        exact[scope] = counts
+    exact, witnesses, scopes = {}, {}, []
+    search = ScopeSearch(domains, original, max_scope_agents)
+    all_targets = {target.target_id for target in targets}
+
+    def covered_all():
+        return any(set(result.covered_targets) >= all_targets for result in witnesses.values())
+
+    for level in search.levels(covered_all) if targets else []:
+        for scope in level:
+            scopes.append(scope)
+            choices = [tuple(plan for plan in domains[agent_id] if plan != original[agent_id])
+                       for agent_id in scope]
+            counts = {"repairable": 0, "unknown": 0, "infeasible": 0}
+            for edits in product(*choices):
+                result = model.verify(targets, edits, domains)
+                counts[result.status] += 1
+                if result.status == "repairable":
+                    signature = (result.covered_targets, tuple(sorted(result.changed_fields.items())))
+                    witnesses.setdefault(signature, result)
+            exact[scope] = counts
     candidates = list(witnesses.values())
 
     def dominates(left, right):
@@ -495,10 +553,12 @@ def generate_scope_candidates(plans, observations, checks=None, max_scope_agents
     elif any(scope["status"] == "unknown" for scope in summaries):
         status, reason = "unknown", "Missing evidence or unmodeled effects prevent a verified recommendation."
     else:
-        status, reason = "infeasible", "No witness exists in the declared finite domain and edit capacity."
+        status, reason = "infeasible", "No witness exists in the declared finite domain and searched scopes."
+    if status != "repairable" and search.stop == "assignment_budget":
+        reason += " Larger scopes were not searched: assignment budget reached."
     return {
         "status": status, "reason": reason,
-        "horizon": 1, "max_scope_agents": max_scope_agents,
+        "horizon": 1, **search.report(),
         "model": "submitted-state player action pass; shares before primitives",
         "targets": [asdict(target) for target in targets],
         "domains": {agent_id: [asdict(plan) for plan in domain] for agent_id, domain in domains.items()},

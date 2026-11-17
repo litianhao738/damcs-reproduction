@@ -317,6 +317,52 @@ class RepairScopeChecks(unittest.TestCase):
         self.execute(plans, [Plan(**edit) for edit in two["selected"]["edits"]])
         self.assertEqual(self.players[0].achievements["make_iron_pickaxe"], 1)
 
+    def three_provider_iron_pickaxe(self):
+        self.make_env(4)
+        x, y = self.players[0].pos
+        self.world[(x + 1, y + 1)] = "furnace"
+        self.players[1].inventory["wood"] = 1
+        self.players[2].inventory["coal"] = 1
+        self.players[3].inventory["iron"] = 1
+        return [plan(0, "make_iron_pickaxe"), plan(1), plan(2), plan(3)]
+
+    def test_uncapped_search_finds_a_three_provider_repair(self):
+        plans = self.three_provider_iron_pickaxe()
+        capped = generate_scope_candidates(plans, self.observations(), max_scope_agents=2)
+        self.assertIsNone(capped["selected"])
+        report = generate_scope_candidates(plans, self.observations())
+        self.assertIsNone(report["max_scope_agents"])
+        self.assertEqual(report["selected"]["edited_agents"], [1, 2, 3])
+        # Every target is covered by three agents, so four-agent scopes are skipped.
+        self.assertEqual((report["searched_scope_agents"], report["search_stop"]), (3, "all_targets_covered"))
+        self.execute(plans, [Plan(**edit) for edit in report["selected"]["edits"]])
+        self.assertEqual(self.players[0].achievements["make_iron_pickaxe"], 1)
+
+    def test_uncapped_search_keeps_the_smallest_scope_when_targets_cannot_all_be_covered(self):
+        self.table(0)
+        self.table(1)
+        self.players[2].inventory["wood"] = 1
+        plans = [plan(0, "make_wood_pickaxe"), plan(1, "make_wood_pickaxe"), plan(2)]
+        report = generate_scope_candidates(plans, self.observations())
+        self.assertEqual((report["searched_scope_agents"], report["search_stop"]), (3, "scope_limit"))
+        self.assertEqual(report["selected"]["edited_agents"], [2])
+        self.assertEqual(len(report["selected"]["covered_targets"]), 1)
+
+    def test_assignment_budget_stops_deepening_after_the_complete_small_scopes(self):
+        self.table(0)
+        self.table(1)
+        self.players[2].inventory["wood"] = 1
+        plans = [plan(0, "make_wood_pickaxe"), plan(1, "make_wood_pickaxe"), plan(2)]
+        with patch("memory_system.repair_scopes.ASSIGNMENT_BUDGET", 1):
+            report = generate_scope_candidates(plans, self.observations())
+        self.assertEqual((report["searched_scope_agents"], report["search_stop"]), (2, "assignment_budget"))
+        self.assertEqual(report["selected"]["edited_agents"], [2])
+        plans = self.three_provider_iron_pickaxe()
+        with patch("memory_system.repair_scopes.ASSIGNMENT_BUDGET", 1):
+            report = generate_scope_candidates(plans, self.observations())
+        self.assertIsNone(report["selected"])
+        self.assertIn("assignment budget", report["reason"])
+
     def test_unobserved_incoming_share_propagates_through_a_chain(self):
         self.table(2)
         plans = [plan(0, "share", item="wood", recipient=1),
@@ -336,7 +382,10 @@ class RepairScopeChecks(unittest.TestCase):
         plans = [plan(i, "make_wood_pickaxe" if i == 0 else "noop") for i in range(6)]
         first = generate_scope_candidates(plans, self.observations())
         second = generate_scope_candidates(plans, self.observations())
+        # Scopes of up to two agents are always complete (1 + 6 + 15); one agent
+        # already covers the target, so the uncapped search stops there.
         self.assertEqual(len(first["scope_results"]), 22)
+        self.assertEqual(first["search_stop"], "all_targets_covered")
         self.assertEqual(first["selected"], second["selected"])
         self.assertEqual(first["selected"]["edited_agents"], [1])
 

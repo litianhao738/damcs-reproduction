@@ -321,7 +321,7 @@ class AgentThinkingProcessor:
     def process_agent_thinking_parallel(
             agents, agents_contexts, info, coordination_mode="repair",
             max_repair_rounds=2, coordination_log=None,
-            scope_mode="suggest", scope_max_agents=2, intervention=None, execution_guard=None):
+            scope_mode="suggest", scope_max_agents=None, intervention=None, execution_guard=None):
         """Run all AI agents' AgentScope replies concurrently, but skip HumanAgents"""
         agents_responses = []
         
@@ -593,6 +593,13 @@ class SimulationContextManager:
         
         return agents_contexts
 
+def positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError('must be at least 1')
+    return number
+
+
 def get_arg_parser():
     parser = argparse.ArgumentParser(description='Run multi-agent simulation with optional human agents.')
     parser.add_argument('--human_agents', type=str, default='',
@@ -613,8 +620,11 @@ def get_arg_parser():
                         help='Maximum targeted replanning rounds per planning cycle (default: 2).')
     parser.add_argument('--scope_mode', choices=['off', 'suggest', 'auto', 'human'], default='suggest',
                         help='Record finite-domain repair scope suggestions in repair mode (default: suggest).')
-    parser.add_argument('--scope_max_agents', type=int, choices=[1, 2], default=2,
-                        help='Maximum AI agents whose fields a suggested repair may change (default: 2).')
+    parser.add_argument('--scope_max_agents', type=positive_int, default=None,
+                        help='Cap on AI agents a repair search may change. Default: no cap; the search '
+                             'deepens by agent count and keeps the smallest scope that covers the most targets.')
+    parser.add_argument('--review_max_agents', type=positive_int, default=2,
+                        help='Most agents one human review may open; larger repairs skip review (default: 2).')
     parser.add_argument('--condition', choices=['custom', 'A', 'B', 'C', 'H0', 'H1', 'H2'], default='custom')
     parser.add_argument('--seed', type=int, default=4)
     parser.add_argument('--repeat_id', type=int, default=0)

@@ -2,12 +2,12 @@
 
 from collections import Counter
 from dataclasses import asdict, replace
-from itertools import combinations, product
+from itertools import product
 from time import perf_counter
 
 from third_party.coop2_cube.env.env import Block, CoopBlockPush
 from .coordination import Plan
-from .repair_scopes import RepairTarget, ScopeCandidate, select_repair_scope
+from .repair_scopes import RepairTarget, ScopeCandidate, ScopeSearch, select_repair_scope
 
 
 OPERATIONS = ('noop', 'move_up', 'move_down', 'move_left', 'move_right')
@@ -62,19 +62,23 @@ class CubeAdapter:
                                         f'{block.id}:{direction}', True, {'participants': block.weight}, related))
         return targets
 
-    def generate(self, plans, observations, max_scope_agents=2, editable_agents=None):
+    def generate(self, plans, observations, max_scope_agents=None, editable_agents=None):
         started = perf_counter()
         targets = self.targets(plans, observations)
         editable = set(observations) if editable_agents is None else set(editable_agents)
         domains = {plan.agent_id: tuple(replace(plan, operation=operation) for operation in OPERATIONS)
                    for plan in plans if plan.agent_id in editable}
-        scopes = [()]
-        for size in range(1, min(max_scope_agents, len(domains)) + 1):
-            scopes.extend(combinations(sorted(domains), size))
         original = {plan.agent_id: plan for plan in plans}
-        candidates, exact = {}, {}
+        candidates, exact, scopes = {}, {}, []
         count = 0
-        for scope in scopes if targets else []:
+        search = ScopeSearch(domains, original, max_scope_agents)
+        all_targets = {target.target_id for target in targets}
+
+        def covered_all():
+            return any(set(result.covered_targets) >= all_targets for result in candidates.values())
+
+        for scope in (scope for level in search.levels(covered_all) for scope in level) if targets else []:
+            scopes.append(scope)
             results = []
             choices = [tuple(plan for plan in domains[agent_id] if plan != original[agent_id]) for agent_id in scope]
             for edits in product(*choices):
@@ -98,7 +102,7 @@ class CubeAdapter:
                 'domains': {key: [asdict(plan) for plan in domain] for key, domain in domains.items()},
                 'candidates': [candidate.to_dict() for candidate in minimal], 'scope_results': summaries,
                 'selected': selected.to_dict() if selected else None, 'horizon': 1,
-                'max_scope_agents': max_scope_agents, 'assignments_evaluated': count,
+                **search.report(), 'assignments_evaluated': count,
                 'status': 'repairable' if selected else 'infeasible' if targets else 'no_targets',
                 'elapsed_seconds': perf_counter() - started}
 

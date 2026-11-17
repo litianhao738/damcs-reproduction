@@ -15,10 +15,17 @@ from memory_system.experiments import CONDITIONS
 from memory_system.intervention import write_json
 
 
+def positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError('must be at least 1')
+    return number
+
+
 def build_matrix(args):
     variants = [(args.scope_max_agents, args.evidence_mode, args.pause_mode, args.revalidation)]
     if args.suite == 'capacity':
-        variants = [(k, args.evidence_mode, args.pause_mode, args.revalidation) for k in (1, 2)]
+        variants = [(k, args.evidence_mode, args.pause_mode, args.revalidation) for k in (1, 2, None)]
     elif args.suite == 'evidence':
         variants = [(args.scope_max_agents, evidence, args.pause_mode, args.revalidation) for evidence in ('full', 'compact')]
     elif args.suite == 'waiting':
@@ -27,12 +34,13 @@ def build_matrix(args):
     matrix = []
     for condition, seed, repeat, (k, evidence, pause, validation) in product(
             args.conditions, args.seeds, range(args.repeats), variants):
-        label = f'{condition}_seed{seed}_r{repeat}_k{k}_{evidence}_{pause}_{validation}'
+        label = f'{condition}_seed{seed}_r{repeat}_k{"all" if k is None else k}_{evidence}_{pause}_{validation}'
         directory = Path(args.results_dir).resolve() / label
         command = [sys.executable, '-B', str(ROOT / ('run_cube.py' if args.environment == 'cube' else 'run.py')),
                    '--condition', condition, '--seed', str(seed), '--repeat_id', str(repeat),
                    '--agent_num', str(args.agent_num), '--step_num', str(args.step_num),
-                   '--scope_max_agents', str(k), '--human_requests', str(args.human_requests),
+                   *(['--scope_max_agents', str(k)] if k is not None else []),
+                   '--review_max_agents', str(args.review_max_agents), '--human_requests', str(args.human_requests),
                    '--evidence_mode', evidence, '--pause_mode', pause, '--revalidation', validation,
                    '--reviewer', args.reviewer, '--review_timeout', str(args.review_timeout),
                    '--review_step_seconds', str(args.review_step_seconds),
@@ -42,7 +50,8 @@ def build_matrix(args):
             command += ['--grid_size', str(args.grid_size), '--block_specs', args.block_specs]
         matrix.append({'run_id': label, 'directory': str(directory), 'command': command,
                        'environment': args.environment, 'condition': condition, 'seed': seed, 'repeat_id': repeat,
-                       'reviewer': args.reviewer, 'scope_max_agents': k, 'evidence_mode': evidence,
+                       'reviewer': args.reviewer, 'scope_max_agents': k,
+                       'review_max_agents': args.review_max_agents, 'evidence_mode': evidence,
                        'pause_mode': pause, 'revalidation': validation, 'human_requests': args.human_requests})
     return matrix
 
@@ -71,7 +80,7 @@ def summarize_run(directory):
     reviews = [read_json(path) for path in sorted((directory / 'reviews').glob('review_[0-9][0-9][0-9][0-9].json'))]
     replies = [event for event in events if event['event'] == 'review_resolved']
     row = {key: config.get(key) for key in (
-        'environment', 'condition', 'seed', 'repeat_id', 'reviewer', 'scope_max_agents',
+        'environment', 'condition', 'seed', 'repeat_id', 'reviewer', 'scope_max_agents', 'review_max_agents',
         'human_requests', 'evidence_mode', 'pause_mode', 'revalidation', 'source_sha256',
     )}
     row.update({key: summary.get(key) for key in (
@@ -119,7 +128,10 @@ def get_parser():
     parser.add_argument('--suite', choices=['main', 'capacity', 'evidence', 'waiting'], default='main')
     parser.add_argument('--agent_num', type=int, default=6)
     parser.add_argument('--step_num', type=int, default=350)
-    parser.add_argument('--scope_max_agents', type=int, choices=[1, 2], default=2)
+    parser.add_argument('--scope_max_agents', type=positive_int, default=None,
+                        help='Repair search cap; default none. The capacity suite compares 1, 2 and none.')
+    parser.add_argument('--review_max_agents', type=positive_int, default=2,
+                        help='Most agents one human review may open.')
     parser.add_argument('--human_requests', type=int, default=3)
     parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='global')
     parser.add_argument('--evidence_mode', choices=['full', 'compact'], default='compact')

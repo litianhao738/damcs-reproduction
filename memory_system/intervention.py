@@ -35,8 +35,11 @@ def response_plans(agents, responses):
 
 
 def choose_review_scope(analysis, strategy, capacity):
+    """Agents a reviewer may edit; ``capacity`` caps what one person is asked to read."""
     if strategy == "verified":
-        return analysis["selected"]["edited_agents"] if analysis["selected"] else []
+        selected = analysis["selected"]
+        # The search has no cap; a minimal repair larger than the review cap is not sent.
+        return selected["edited_agents"] if selected and len(selected["edited_agents"]) <= capacity else []
     targets = analysis["targets"]
     if strategy == "owner":
         counts = Counter(target["agent_id"] for target in targets)
@@ -56,12 +59,16 @@ def choose_review_scope(analysis, strategy, capacity):
 class InterventionController:
     def __init__(self, output_dir, mode="suggest", strategy="verified", capacity=2,
                  request_budget=3, timeout=120, pause_mode="global", evidence_mode="compact",
-                 clock=time.monotonic, revalidation="incremental", environment="crafter"):
+                 clock=time.monotonic, revalidation="incremental", environment="crafter",
+                 search_agents=None):
+        """``capacity``: most agents one review may open. ``search_agents``: cap on the
+        automatic repair search (None searches the smallest sufficient scope, uncapped)."""
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.review_dir = self.output_dir / "reviews"
         self.review_dir.mkdir(exist_ok=True)
         self.mode, self.strategy, self.capacity = mode, strategy, capacity
+        self.search_agents = search_agents
         self.request_budget, self.timeout = request_budget, timeout
         self.pause_mode, self.evidence_mode, self.clock = pause_mode, evidence_mode, clock
         self.revalidation = revalidation
@@ -149,7 +156,7 @@ class InterventionController:
 
     def _auto(self, agents, observations, responses, plans, analysis=None):
         if analysis is None:
-            analysis = self.adapter.generate(plans, observations, max_scope_agents=self.capacity,
+            analysis = self.adapter.generate(plans, observations, max_scope_agents=self.search_agents,
                                                 editable_agents={agent.id for agent in agents if not getattr(agent, "is_human", False)})
         selected = analysis["selected"]
         if selected is None:
@@ -161,10 +168,14 @@ class InterventionController:
                             [Plan(**edit) for edit in selected["edits"]], domains, "auto")
 
     def _request(self, agents, observations, responses, plans, analysis):
+        """Issue one review request; return None, or the reason no request was sent."""
         started = time.perf_counter()
         scope = choose_review_scope(analysis, self.strategy, self.capacity)
         if not scope:
-            return False
+            selected = analysis["selected"]
+            if selected and len(selected["edited_agents"]) > self.capacity:
+                return "over_review_capacity"
+            return "no_new_review_scope"
         candidates = [candidate for candidate in analysis["candidates"]
                       if set(candidate["edited_agents"]) <= set(scope)]
         proposal = min(candidates, key=lambda candidate: (-len(candidate["covered_targets"]),
@@ -186,7 +197,7 @@ class InterventionController:
                                         goals, self.evidence_mode)
         signature = json.dumps({"goals": goals, "facts": evidence["facts"]}, sort_keys=True)
         if signature == self.last_request_key:
-            return False
+            return "no_new_review_scope"
         self.last_request_key = signature
         self.issued += 1
         request_id = f"review_{self.issued:04d}"
@@ -214,7 +225,7 @@ class InterventionController:
         self.event("review_requested", step, request_id=request_id, scope=scope,
                    pause_agents=document["pause_agents"], remaining_requests=document["remaining_requests"],
                    evidence_groups=evidence["fact_groups_after"])
-        return True
+        return None
 
     def _resolve(self, agents, observations, responses, plans):
         pending = self.pending
@@ -283,9 +294,14 @@ class InterventionController:
             self._auto(agents, observations, responses, plans, analysis)
         elif self.mode == "human" and analysis is not None and analysis["targets"]:
             exhausted = self.issued >= self.request_budget
-            if exhausted or not self._request(agents, observations, responses, plans, analysis):
-                self.event('review_skipped', agents[0].step,
-                           reason='budget_exhausted' if exhausted else 'no_new_review_scope')
+            skipped = 'budget_exhausted' if exhausted else \
+                self._request(agents, observations, responses, plans, analysis)
+            if skipped:
+                details = {}
+                if skipped == 'over_review_capacity':
+                    details = {'scope_agents': analysis['selected']['edited_agents'],
+                               'review_capacity': self.capacity}
+                self.event('review_skipped', agents[0].step, reason=skipped, **details)
                 self._auto(agents, observations, responses, plans, analysis)
         replacements = {response["id"]: Plan(**response["plan_override"]) for response in responses
                         if "plan_override" in response}

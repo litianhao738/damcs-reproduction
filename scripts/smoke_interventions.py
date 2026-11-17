@@ -132,6 +132,23 @@ class InterventionChecks(unittest.TestCase):
         self.assertIsNone(controller.pending)
         self.assertEqual(self.agents[1].op, 'share')
 
+    def test_repair_larger_than_review_capacity_skips_review_and_uses_auto(self):
+        self.plans = self.fixture.three_provider_iron_pickaxe()
+        self.agents = self.fixture.agents(self.plans)
+        self.obs = self.fixture.observations()
+        self.analysis = generate_scope_candidates(self.plans, self.obs)
+        self.assertEqual(self.analysis['selected']['edited_agents'], [1, 2, 3])
+        controller = self.controller(mode='human', capacity=2)
+        self.prepare(controller)
+        self.assertEqual(controller.issued, 0)
+        self.assertIsNone(controller.pending)
+        self.assertEqual(controller.commits[-1]['source'], 'auto')
+        events = [json.loads(line) for line in (self.output / 'events.jsonl').read_text().splitlines()]
+        skipped = next(event for event in events if event['event'] == 'review_skipped')
+        self.assertEqual((skipped['reason'], skipped['scope_agents'], skipped['review_capacity']),
+                         ('over_review_capacity', [1, 2, 3], 2))
+        self.assertEqual([agent.op for agent in self.agents[1:]], ['share'] * 3)
+
     def test_rejection_consumes_one_request_and_uses_auto(self):
         controller = self.controller(mode='human')
         self.prepare(controller)

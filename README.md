@@ -136,7 +136,8 @@ Useful command-line options:
 | `--coordination_mode` | `repair` | `off`: original planning; `diagnose`: report checks; `repair`: targeted replanning and holding unresolved immediate operations. |
 | `--repair_rounds` | `2` | Maximum extra targeted replanning rounds per cycle: `0`, `1`, or `2`. |
 | `--scope_mode` | `suggest` | In `repair` mode, generate and log verified repair-scope suggestions; `off` skips scope search. |
-| `--scope_max_agents` | `2` | Maximum AI agents whose plan fields a suggested repair may change: `1` or `2`. Separate from repair rounds. |
+| `--scope_max_agents` | none | Cap K on AI agents a repair may change. Default: no cap; the search deepens by agent count and keeps the scope that covers the most targets with the fewest agents. Set `1` or `2` for ablations. Separate from repair rounds. |
+| `--review_max_agents` | `2` | Most agents one human review may open. A smallest sufficient repair above this skips review and uses the automatic fallback. |
 | `--results_dir` | `results` | Directory for CSV statistics and observations. Use a unique directory per experiment. |
 | `--save_global_maps` | off | Save complete world-map screenshots under `<results_dir>/global_maps`. |
 | `--global_map_start` | `0` | First step to save when `--save_global_maps` is enabled. |
@@ -236,7 +237,7 @@ The projection models the submitted-state player action pass, using recipes and 
 ```powershell
 python scripts\smoke_repair_scopes.py
 python scripts\evaluate_scope_examples.py --results_dir results\scope_examples
-python run.py --agent_num 2 --step_num 10 --scope_mode suggest --scope_max_agents 2 --results_dir results\scope_smoke --no_plot
+python run.py --agent_num 2 --step_num 10 --scope_mode suggest --results_dir results\scope_smoke --no_plot
 ```
 
 The example comparison uses controlled cases and verifies selected witnesses with real Crafter execution. It compares problem-owner ordering, a complete-related-group coverage reference, and verified scope selection. It measures structural repairability and search cost; human benefit and full-task improvements need separate experiments.
@@ -261,7 +262,7 @@ H1 is a transparent structural reference, not a claimed reproduction of a paper'
 python run.py --condition C --agent_num 6 --step_num 350 --seed 4 --results_dir results\auto --no_plot
 
 # Open the printed localhost URL to approve, preview, edit or skip a request
-python run.py --condition H2 --human_requests 3 --scope_max_agents 2 --pause_mode local --results_dir results\human --no_plot
+python run.py --condition H2 --human_requests 3 --review_max_agents 2 --pause_mode local --results_dir results\human --no_plot
 
 # Preview a paired-seed matrix without calling models
 python scripts\run_experiments.py --conditions A B C H0 H1 H2 --seeds 4 5 6 --dry_run
@@ -273,7 +274,7 @@ python scripts\run_experiments.py --conditions C H2 --seeds 4 --step_num 10 --re
 python scripts\evaluate_frozen_scopes.py --input results\pipeline
 ```
 
-`--human_requests` is the per-episode request budget B; a rejection or timeout consumes its issued request. `--scope_max_agents` is edit capacity K. `--review_timeout` is wall time; `--review_step_seconds` paces environment ticks while waiting. Global and local waiting both advance the environment, with held agents executing `noop`. `--pause_mode none` continues execution and rechecks replies. `--revalidation full` always checks the whole team; `incremental` checks dependencies and reuses an unchanged sufficient certificate when possible.
+`--human_requests` is the per-episode request budget B; a rejection or timeout consumes its issued request. `--scope_max_agents` is the search cap K (none by default); `--review_max_agents` caps what one review may open. `--review_timeout` is wall time; `--review_step_seconds` paces environment ticks while waiting. Global and local waiting both advance the environment, with held agents executing `noop`. `--pause_mode none` continues execution and rechecks replies. `--revalidation full` always checks the whole team; `incremental` checks dependencies and reuses an unchanged sufficient certificate when possible.
 
 Crafter compact evidence removes inventory/view groups only when the declared one-step verdict and existing protection obligations remain provable. Minimality is by deletion of these groups relative to fixed plans, positions and permissions; it is not a global minimum or a guarantee of human understanding. CUBE retains its complete observed board as one evidence group.
 

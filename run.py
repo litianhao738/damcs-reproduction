@@ -29,7 +29,7 @@ class CompleteMulitAgentSimulation:
     
     def __init__(self, agents, env, max_steps, n_players,
                  coordination_mode="repair", repair_rounds=2, coordination_log=None,
-                 scope_mode="suggest", scope_max_agents=2, intervention=None,
+                 scope_mode="suggest", scope_max_agents=None, intervention=None,
                  execution_guard=None, review_step_seconds=1.0, reviewer=None):
         self.agents = agents
         self.env = env
@@ -43,7 +43,7 @@ class CompleteMulitAgentSimulation:
         self.intervention = intervention
         if self.intervention is None and scope_mode in ('auto', 'human'):
             self.intervention = InterventionController(agents[0].agent_dir.parent,
-                                                       mode=scope_mode, capacity=scope_max_agents)
+                                                       mode=scope_mode, search_agents=scope_max_agents)
         self.execution_guard = execution_guard
         self.review_step_seconds = review_step_seconds
         self.reviewer = reviewer
@@ -236,7 +236,8 @@ def main():
         )
         intervention = InterventionController(
             round_results_dir, mode=args.scope_mode, strategy=args.review_strategy,
-            capacity=args.scope_max_agents, request_budget=args.human_requests,
+            capacity=args.review_max_agents, search_agents=args.scope_max_agents,
+            request_budget=args.human_requests,
             timeout=args.review_timeout, pause_mode=args.pause_mode, evidence_mode=args.evidence_mode,
             revalidation=args.revalidation,
         )
