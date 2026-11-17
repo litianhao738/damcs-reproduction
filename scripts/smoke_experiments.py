@@ -27,9 +27,10 @@ class ExperimentChecks(unittest.TestCase):
     def test_paired_seed_matrix_uses_identical_shared_settings(self):
         args = get_parser().parse_args(['--seeds', '4', '5', '--repeats', '2', '--results_dir', self.output.name])
         rows = build_matrix(args)
-        self.assertEqual(len(rows), 24)
-        self.assertEqual(len({row['run_id'] for row in rows}), 24)
-        for condition in ('A', 'B', 'C', 'H0', 'H1', 'H2'):
+        self.assertEqual(len(rows), 20)
+        self.assertEqual(len({row['run_id'] for row in rows}), 20)
+        self.assertEqual({row['condition'] for row in rows}, {'A', 'B', 'C', 'H0', 'H2'})
+        for condition in ('A', 'B', 'C', 'H0', 'H2'):
             self.assertEqual({(row['seed'], row['repeat_id']) for row in rows if row['condition'] == condition},
                              {(4, 0), (4, 1), (5, 0), (5, 1)})
 

@@ -65,17 +65,20 @@ Crafter 的主要指标是"采到钻石用了多少步"，不是成功率。已�
 | B | A + 最多 2 轮重规划 | | | | | | — | — | — | |
 | C | B + 自动执行修复方案（最强自动对照） | | | | | | | — | — | |
 | H0 | 人审，开放出问题的 Agent | | | | — | — | | | | |
-| H1 | 人审，开放整个相关小组 | | | | — | — | | | | |
 | H2 | 人审，开放可修复范围 S（主方法） | | | | | | | | | |
 
+- **人审只保留 H0 和 H2 两种**：
+  - H0 是最直接的做法：谁出了问题，就把谁的计划开放给人。
+  - H2 是本项目的方法：只开放能修好问题的最少几个人，以及修复实际要改的字段。
+  - 原先的 H1（开放整个相关小组的全部字段）已于 2026-11-17 删除。它允许人在较大的范围内自由修改，结果难以量化和比较。
 - **规模**：
-  - Crafter：6 个条件 × 3 个种子 × 2 次重复，共 36 局，其中 H0、H1、H2 的 18 局需要真人审阅。
+  - Crafter：5 个条件 × 3 个种子 × 2 次重复，共 30 局，其中 H0、H2 的 12 局需要真人审阅。
   - CUBE：3 个条件 × 3 个种子 × 2 次重复，共 18 局，其中 H2 的 6 局需要真人审阅。
-  - 合计 54 局。每局用 `--reviewer_id` 记录审阅者编号，审阅顺序另行登记。
+  - 合计 48 局，其中真人审阅 18 局。每局用 `--reviewer_id` 记录审阅者编号，审阅顺序另行登记。
 - **主要比较**：
   - A→B→C 逐级给出重规划（B − A）和修复搜索（C − B）的作用。
   - H2 对 C，看人审有没有超过自动修复。
-  - H2 对 H0、H1，看开放范围的方式是否重要。
+  - H2 对 H0，看"开放能修好问题的人"是否优于"开放出问题的人"。
   - CUBE 列看 B、C、H2 的相对关系在另一个环境中是否一致。
 - **脚本审阅**：只能检查流程，不填入本表。
 
@@ -103,7 +106,7 @@ Crafter 的主要指标是"采到钻石用了多少步"，不是成功率。已�
 
 - **规模**：在线 7 个版本 × 3 个种子 × 2 次重复，共 42 局。两行离线计算不调用模型。预算紧时重复次数降为 1，共 21 局。
 - **证据部件**：脚本审阅只能证明展示的内容变少了。证据是否缩短阅读时间、是否影响判断正确率，需要真人小试，结果只在小试完成后报告。
-- **表 1 的分工**：表 1 已经覆盖"开放哪些 Agent 给人审"（H0、H1、H2）这一项，本表不重复。
+- **表 1 的分工**：表 1 已经覆盖"开放哪些 Agent 给人审"（H0 对 H2）这一项，本表不重复。
 - **动作合法性保护**：这是所有条件共用的公平性设置，不作为贡献，不做消融。
 - **如实报告**：一步修复在一局里出现的次数有限，3 个种子下钻石步数的差异可能不显著。部件是否起作用以对应指标为主要依据；若对应指标也没有变化，要写明该部件在当前设置下没有表现出作用。
 
@@ -171,7 +174,7 @@ python scripts\run_with_model.py --profile qwen
 python scripts\run_experiments.py --model_profiles qwen --conditions A B C --seeds 4 5 6 --repeats 2 --results_dir results\table1_crafter_auto
 
 # Crafter 真人审阅：每位审阅者按分到的种子运行，审阅页面为 http://127.0.0.1:8765
-python scripts\run_experiments.py --model_profiles qwen --conditions H0 H1 H2 --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_crafter_human_R1
+python scripts\run_experiments.py --model_profiles qwen --conditions H0 H2 --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_crafter_human_R1
 
 # CUBE
 python scripts\run_experiments.py --environment cube --agent_num 3 --step_num 30 --model_profiles qwen --conditions B C --seeds 4 5 6 --repeats 2 --results_dir results\table1_cube_auto

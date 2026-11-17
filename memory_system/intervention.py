@@ -2,7 +2,6 @@
 
 from collections import Counter
 from dataclasses import asdict
-from itertools import combinations
 import json
 from pathlib import Path
 import time
@@ -40,20 +39,10 @@ def choose_review_scope(analysis, strategy, capacity):
         selected = analysis["selected"]
         # The search has no cap; a minimal repair larger than the review cap is not sent.
         return selected["edited_agents"] if selected and len(selected["edited_agents"]) <= capacity else []
-    targets = analysis["targets"]
     if strategy == "owner":
-        counts = Counter(target["agent_id"] for target in targets)
+        counts = Counter(target["agent_id"] for target in analysis["targets"])
         return sorted(counts, key=lambda agent_id: (-counts[agent_id], agent_id))[:capacity]
-    groups = [set(target["evidence_agents"]) for target in targets]
-    scopes = set()
-    for size in range(1, len(groups) + 1):
-        for chosen in combinations(groups, size):
-            scope = frozenset().union(*chosen)
-            if len(scope) <= capacity:
-                scopes.add(scope)
-    return sorted(min(scopes, key=lambda scope: (
-        -sum(group <= scope for group in groups), len(scope), tuple(sorted(scope)),
-    ))) if scopes else []
+    raise ValueError(f"Unknown review strategy '{strategy}'; use 'verified' or 'owner'.")
 
 
 class InterventionController:

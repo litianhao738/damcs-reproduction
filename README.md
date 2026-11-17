@@ -264,10 +264,9 @@ The controller in `memory_system/intervention.py` keeps edit permissions S, revi
 | B | A plus at most two targeted replanning rounds |
 | C | B plus verified scope search and automatic execution |
 | H0 | B plus problem-owner review, with C's automatic fallback |
-| H1 | B plus complete-related-group coverage review, with the same fallback |
 | H2 | B plus verified repair-scope review, with the same fallback |
 
-H1 is a transparent structural reference, not a claimed reproduction of a paper's selection algorithm. All conditions use submitted observations and the same environment rules. The candidate domain is shared; the selected edit scope controls which agents and fields the reviewer can change.
+A former H1 condition (review of the whole related group with all fields open) was removed on 2026-11-17 because its free-form group edits were hard to quantify. All conditions use submitted observations and the same environment rules. The candidate domain is shared; the selected edit scope controls which agents and fields the reviewer can change.
 
 ```powershell
 # Automatic scope execution
@@ -277,7 +276,7 @@ python run.py --condition C --agent_num 6 --step_num 350 --seed 4 --results_dir 
 python run.py --condition H2 --human_requests 3 --review_max_agents 2 --pause_mode local --results_dir results\human --no_plot
 
 # Preview a paired-seed matrix without calling models
-python scripts\run_experiments.py --conditions A B C H0 H1 H2 --seeds 4 5 6 --dry_run
+python scripts\run_experiments.py --conditions A B C H0 H2 --seeds 4 5 6 --dry_run
 
 # A scripted reviewer checks the pipeline; its replies are labelled as scripted
 python scripts\run_experiments.py --conditions C H2 --seeds 4 --step_num 10 --reviewer scripted --results_dir results\pipeline

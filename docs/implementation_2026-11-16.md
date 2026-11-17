@@ -36,7 +36,7 @@ MA-Crafter 继续使用原有 DAMCS 分层记忆、AgentScope Agent、导航和�
 
 2026-11-17 起，搜索默认不设编辑人数上限，按人数逐级加深：
 
-- 1–2 人的范围总是完整搜索，H0/H1 等固定小范围策略仍能看到其中全部候选。
+- 1–2 人的范围总是完整搜索，H0 这类固定小范围策略仍能看到其中全部候选。
 - 更大的范围只在还没有候选覆盖全部目标时继续搜索。一旦有候选覆盖全部目标，更大的范围只会多改人、不会被选中，所以停止。
 - 联合检查总数超过预算 `ASSIGNMENT_BUDGET`（5 万次，Crafter 中约 4 秒）时停止，并在 `search_stop=assignment_budget` 中记录。
 - 每次分析记录 `max_scope_agents`、`searched_scope_agents` 和 `search_stop`。
@@ -90,16 +90,15 @@ python run.py --condition H2 --agent_num 6 --step_num 350 --human_requests 3 --r
 | B | A + 最多两轮定向重规划 |
 | C | B + 可修复候选自动选择、提交与执行 |
 | H0 | C 的共同自动能力 + 按问题主体排序选择人审范围 |
-| H1 | 共同自动能力 + 覆盖完整关联组的结构参照 |
 | H2 | 共同自动能力 + 可修复范围人审 |
 
-H1 是明确实现的关联组覆盖参照，尚未宣称等同于中期报告某个原算法的完整复现。三个范围策略共用输入、候选有限域和 K；H2 进一步把开放字段收缩到所选见证的实际修改字段，外部允许字段集合相同。
+两个人审策略共用输入、候选有限域和容量；H2 进一步把开放字段收缩到所选见证的实际修改字段。原先的 H1（覆盖完整关联组、开放全部字段的结构参照）已于 2026-11-17 删除：它允许人在较大范围内自由修改，结果难以量化。`--review_strategy` 现在只接受 `verified`（H2）和 `owner`（H0）。
 
 每局配置记录种子、重复编号、模型名称、Git 提交与当前源码 SHA256。正式条件都使用相同动作保护；兼容 API 中旧的诊断模式语义不用于区分保护强弱。
 
 ```powershell
 # 先检查运行矩阵，不调用模型
-python scripts\run_experiments.py --conditions A B C H0 H1 H2 --seeds 4 5 6 --repeats 2 --dry_run --results_dir results\main_matrix
+python scripts\run_experiments.py --conditions A B C H0 H2 --seeds 4 5 6 --repeats 2 --dry_run --results_dir results\main_matrix
 
 # 去掉 --dry_run 后，按矩阵顺序运行并保存每局结果
 python scripts\run_experiments.py --conditions C H2 --seeds 4 5 6 --suite capacity --reviewer scripted --results_dir results\capacity

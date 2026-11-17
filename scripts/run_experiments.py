@@ -212,7 +212,7 @@ def export_rows(output, rows):
 def get_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--environment', choices=['crafter', 'cube'], default='crafter')
-    parser.add_argument('--conditions', nargs='+', choices=list(CONDITIONS), default=['A', 'B', 'C', 'H0', 'H1', 'H2'])
+    parser.add_argument('--conditions', nargs='+', choices=list(CONDITIONS), default=list(CONDITIONS))
     parser.add_argument('--seeds', type=int, nargs='+', default=[4, 5, 6])
     parser.add_argument('--repeats', type=int, default=1)
     parser.add_argument('--suite', choices=['main', 'ablation', 'capacity', 'evidence', 'waiting'], default='main')

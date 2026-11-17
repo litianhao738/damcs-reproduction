@@ -632,11 +632,12 @@ def get_arg_parser():
                              "agents; 'any' is the ablation that picks any verified repair (default: minimal).")
     parser.add_argument('--reviewer_id', default='',
                         help='Who reviewed this episode; recorded in config.json for the human study.')
-    parser.add_argument('--condition', choices=['custom', 'A', 'B', 'C', 'H0', 'H1', 'H2'], default='custom')
+    parser.add_argument('--condition', choices=['custom', 'A', 'B', 'C', 'H0', 'H2'], default='custom')
     parser.add_argument('--seed', type=int, default=4)
     parser.add_argument('--repeat_id', type=int, default=0)
     parser.add_argument('--human_requests', type=int, default=3)
-    parser.add_argument('--review_strategy', choices=['verified', 'owner', 'related'], default='verified')
+    parser.add_argument('--review_strategy', choices=['verified', 'owner'], default='verified',
+                        help="Which agents a review opens: 'verified' repair scope (H2) or problem 'owner' (H0).")
     parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='global')
     parser.add_argument('--evidence_mode', choices=['compact', 'full'], default='compact')
     parser.add_argument('--revalidation', choices=['incremental', 'full', 'none'], default='incremental',

@@ -20,7 +20,7 @@ def assess_snapshot(document, capacity):
     observations = adapter.restore(document['snapshot'])
     report = adapter.generate(plans, observations, max_scope_agents=capacity)
     ranges = {}
-    for strategy in ('owner', 'related', 'verified'):
+    for strategy in ('owner', 'verified'):
         scope = choose_review_scope(report, strategy, capacity)
         witnesses = [candidate for candidate in report['candidates'] if set(candidate['edited_agents']) <= set(scope)]
         ranges[strategy] = {'agents': scope, 'has_witness': bool(witnesses),
