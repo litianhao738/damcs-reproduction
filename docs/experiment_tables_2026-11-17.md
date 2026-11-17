@@ -111,25 +111,29 @@ Crafter 的主要指标是"采到钻石用了多少步"，不是成功率。已�
 
 只跑 Crafter，只改对话模型，其余设置同表 1。主要模型是 Qwen、DeepSeek、Kimi、GLM，另加 GPT 作为国外参照。
 
-基线是条件 A（DAMCS 底座），不是不带 DAMCS 记忆和分工的纯 API。本表要回答的是"本项目加在 DAMCS 之上的机制，其作用是否随模型强弱变化"；若以纯 API 为基线，差值中会混入 DAMCS 本身的作用。
+基线是条件 A（DAMCS 底座），不是不带 DAMCS 记忆和分工的纯 API。本表要回答的是"本项目加在 DAMCS 之上的机制，包括自动修复 C 和主方法 H2，其作用是否随模型强弱变化"；若以纯 API 为基线，差值中会混入 DAMCS 本身的作用。
 
-| 模型 | A 钻石步数 | B 钻石步数 | C 钻石步数 | C − A | C − B | 问题数/局（A） | 修复生效率（C） | 每局花费 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Qwen | | | | | | | | |
-| DeepSeek | | | | | | | | |
-| Kimi | | | | | | | | |
-| GLM | | | | | | | | |
-| GPT | | | | | | | | |
+| 模型 | A 钻石步数 | B 钻石步数 | C 钻石步数 | H2 钻石步数 | C − A | C − B | H2 − C | 问题数/局（A） | 修复生效率（C） | 人审次数/局（H2） | 阅读时间/局（H2） | 每局花费 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Qwen | | | | | | | | | | | | |
+| DeepSeek | | | | | | | | | | | | |
+| Kimi | | | | | | | | | | | | |
+| GLM | | | | | | | | | | | | |
+| GPT | | | | | | | | | | | | |
 
 - **列的含义**：
   - C − A：重规划加自动修复整体带来的变化。钻石步数越少越好，所以差值为负表示变好。
   - C − B：修复搜索单独带来的变化。
+  - H2 − C：在同一模型下，真人审阅相对自动修复的增量。这是主方法的人审价值是否随模型变化的直接证据。
   - 问题数/局（A）：没有任何协调机制时，这个模型自然出现多少需要修复的协调问题。
-- **规模**：5 个模型 × 3 个条件 × 3 个种子 × 1 次，共 45 局。Qwen 一行直接复用表 1 中重复编号为 0 的 A、B、C 局，与其他模型的局数一致。
+- **H2 用真人审阅**，设置与表 1 的 H2 相同（局部等待、增量复核、精简证据，B=3，一次最多开放 2 个 Agent）。脚本审阅不能代替，因为它总是采纳建议，结果接近 C。
+- **规模**：5 个模型 × 4 个条件 × 3 个种子 × 1 次，共 60 局，其中 H2 的 15 局需要真人审阅。Qwen 一行直接复用表 1 中重复编号为 0 的 A、B、C、H2 局，所以需要新跑 48 局，其中真人审阅 12 局。
+- **审阅者分配**：审阅者不能与模型绑定，否则"模型差异"和"审阅者差异"无法区分。按种子分配审阅者，同一个种子的所有模型由同一位审阅者审阅；审阅时尽量不告诉审阅者当前是哪个模型。每局用 `--reviewer_id` 记录审阅者编号。
 - **要检验的猜想**：
   - 弱模型出现问题更多，C − A 和 C − B 的改善应更大。
+  - 人审的增量 H2 − C 也可能随模型变化：弱模型留给人修的问题更多；强模型的自动修复已经足够时，人审的价值变小。
   - 强模型问题少，机制的作用也小。
-  - 两种结果都要如实报告。
+  - 所有结果都要如实报告。
 - **措辞**：这是同一套任务上的跨模型对比，不另称新 benchmark。
 
 ## 运行方法
@@ -181,7 +185,11 @@ python scripts\evaluate_frozen_scopes.py --input results\table1_crafter_auto --c
 ### 表 3
 
 ```powershell
-python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --conditions A B C --seeds 4 5 6 --repeats 1 --results_dir results\table3
+# 自动条件
+python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --conditions A B C --seeds 4 5 6 --repeats 1 --results_dir results\table3_auto
+
+# 真人审阅：每位审阅者负责一个种子，审阅该种子下所有模型，审阅页面为 http://127.0.0.1:8765
+python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --conditions H2 --seeds 4 --repeats 1 --reviewer human --reviewer_id R1 --results_dir results\table3_human_R1
 ```
 
 ### 单局试跑
