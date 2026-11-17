@@ -103,6 +103,47 @@ class InterventionChecks(unittest.TestCase):
                                                       '1:make:wood_pickaxe': ['unknown']})
         self.assertEqual((request['edit_agents'], request['proposal']), ([0, 1], []))
         self.assertEqual(request['allowed_fields']['1'], ['operation', 'material', 'item', 'recipient'])
+        self.assertTrue(request['accept_unknown'])
+        # The reviewer knows Agent 1 has wood; the check stays unknown, so the edit
+        # goes through on the reviewer's judgement and really works.
+        self.respond(controller, decision='edit', edits=[Plan(1, 'share', 'not_applicable', 'wood', 0)])
+        applied = next(event for event in self.events() if event['event'] == 'plan_applied')
+        self.assertTrue(applied['human_vouched'])
+        self.assertEqual(controller.validation_counts['human_vouched'], 1)
+        self.transition(controller)
+        self.assertEqual(self.fixture.players[0].achievements['make_wood_pickaxe'], 1)
+
+    def test_unknown_preview_says_whether_the_reviewer_may_vouch(self):
+        self.obs[1]['inventory'] = None
+        self.analysis = generate_scope_candidates(self.plans, self.obs)
+        controller = self.signal_controller()
+        self.prepare(controller)
+        request = self.request_document(controller)
+        address = self.serve(controller)
+
+        def preview(agent_0, agent_1):
+            def index(agent_id, plan):
+                return str(request['domains'][str(agent_id)].index(asdict(plan)))
+            data = urlencode({'id': 'review_0001', 'decision': 'preview',
+                              'agent_0': index(0, agent_0), 'agent_1': index(1, agent_1)}).encode()
+            with urlopen(Request(address + '/respond', data=data)) as response:
+                return response.read().decode('utf-8')
+
+        helpful = preview(self.plans[0], Plan(1, 'share', 'not_applicable', 'wood', 0))
+        self.assertIn('检查结果：unknown', helpful)
+        self.assertIn('可以返回提交', helpful)
+        useless = preview(Plan(0, 'share', 'not_applicable', 'wood', 1), self.plans[1])
+        self.assertIn('帮不上任何一个问题', useless)
+
+    def test_unknown_review_still_rejects_an_edit_known_to_fail(self):
+        self.obs[1]['inventory'] = None
+        self.analysis = generate_scope_candidates(self.plans, self.obs)
+        controller = self.signal_controller()
+        self.prepare(controller)
+        # Agent 0 has no wood of its own to give; that is known, not unknown.
+        self.respond(controller, decision='edit', edits=[Plan(0, 'share', 'not_applicable', 'wood', 1)])
+        resolved = next(event for event in self.events() if event['event'] == 'review_resolved')
+        self.assertEqual(resolved['status'], 'invalid')
 
     def test_stalled_signal_asks_after_steps_without_team_progress(self):
         controller = self.signal_controller(stall_steps=30)

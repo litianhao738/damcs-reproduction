@@ -18,7 +18,7 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 from .coordination import Plan
-from .intervention import write_json
+from .intervention import may_vouch, write_json
 from .repair_scopes import RepairTarget
 from .review_domains import get_review_adapter
 
@@ -231,8 +231,14 @@ class ReviewHandler(BaseHTTPRequestHandler):
         facts = ''.join(f'<details class="card" open><summary>{escape(key)}</summary>'
                         f'<pre>{escape(json.dumps(display_fact(key, value), ensure_ascii=False, indent=2))}</pre></details>'
                         for key, value in evidence["facts"].items())
-        proposal_note = '推荐方案已在请求时的快照中通过联合验证；提交时还会复核。' if request['proposal'] \
-            else '当前授权范围内没有已验证的联合修复建议；可以自行调整、预检或跳过。'
+        if request['proposal']:
+            proposal_note = '推荐方案已在请求时的快照中通过联合验证；提交时还会复核。'
+        elif request.get('accept_unknown'):
+            proposal_note = ('系统缺少信息，无法验证任何修改，所以没有推荐方案。请根据下方依据自己判断：'
+                             '检查结果为 unknown 时也可以提交，系统会按你的判断执行；'
+                             '检查发现某个问题肯定修不好（infeasible）的修改仍会被拒绝。')
+        else:
+            proposal_note = '当前授权范围内没有已验证的联合修复建议；可以自行调整、预检或跳过。'
         remaining = state["remaining_seconds"]
         clock = (f'<p>剩余时间：<span id="countdown" class="countdown">{int(remaining + 0.999)} 秒</span>'
                  f'（超时后自动改用自动修复）</p>') if is_open and remaining is not None else ''
@@ -275,13 +281,23 @@ class ReviewHandler(BaseHTTPRequestHandler):
         ] if decision in ("edit", "preview") else []
         if decision == "preview":
             adapter = get_review_adapter(request["environment"])
-            result = adapter.verify(
-                [Plan(**plan) for plan in request["plans"]], adapter.restore(request["snapshot"]),
-                [RepairTarget(**target) for target in request["targets"]], [Plan(**edit) for edit in edits],
-                {int(key): tuple(Plan(**plan) for plan in values) for key, values in request["domains"].items()},
-                {int(key): value for key, value in request["evidence"]["navigator_actions"].items()},
-            )
-            return self.page(f'<h1>检查结果：{result.status}</h1><pre>'
+
+            def check(proposed):
+                return adapter.verify(
+                    [Plan(**plan) for plan in request["plans"]], adapter.restore(request["snapshot"]),
+                    [RepairTarget(**target) for target in request["targets"]], [Plan(**edit) for edit in proposed],
+                    {int(key): tuple(Plan(**plan) for plan in values) for key, values in request["domains"].items()},
+                    {int(key): value for key, value in request["evidence"]["navigator_actions"].items()},
+                )
+
+            result = check(edits)
+            if result.status == 'unknown' and request.get('accept_unknown'):
+                note = ('<p class="banner">系统无法确认这样改能否修好。若你根据依据判断可行，可以返回提交。</p>'
+                        if may_vouch(check([]), result) else
+                        '<p class="banner alert">这样改帮不上任何一个问题，提交会被拒绝。</p>')
+            else:
+                note = ''
+            return self.page(f'<h1>检查结果：{result.status}</h1>{note}<pre>'
                              + escape(json.dumps(asdict(result), ensure_ascii=False, indent=2))
                              + f'</pre><a href="/review?id={escape(request_id)}">返回修改</a>')
         opened = self.directory / f"{request_id}.opened.json"

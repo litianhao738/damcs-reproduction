@@ -49,6 +49,20 @@ def choose_review_scope(analysis, strategy, capacity):
 
 
 REVIEW_TRIGGERS = ("signals", "stage", "all")
+# Per-problem check results that mean "known not to be solved by this edit".
+KNOWN_FAILURES = frozenset({"violated", "infeasible"})
+
+
+def may_vouch(baseline, result):
+    """Whether a reviewer may vouch for an edit the check cannot confirm.
+
+    The check must be unknown overall (not broken somewhere), and the edit must turn
+    at least one problem that fails without any edit into one that might now be solved.
+    An edit that helps nothing is still rejected.
+    """
+    return result.status == "unknown" and any(
+        baseline.target_results.get(target_id) in KNOWN_FAILURES and state not in KNOWN_FAILURES
+        for target_id, state in result.target_results.items())
 
 
 class InterventionController:
@@ -143,7 +157,13 @@ class InterventionController:
             agent.review_paused = agent.id in request["paused"]
 
     def _commit(self, agents, observations, responses, plans, targets, edits, domains,
-                source, request_id=None, already_verified=False):
+                source, request_id=None, already_verified=False, accept_unknown=False):
+        """Check and apply one joint edit.
+
+        ``accept_unknown``: for a review asked because facts were missing, a reviewer's
+        edit whose check is still ``unknown`` is applied on the reviewer's judgement
+        (logged as ``human_vouched``); an edit known to fail is still rejected.
+        """
         step = agents[0].step
         started = time.perf_counter()
         expected = {target.target_id for target in targets}
@@ -165,12 +185,19 @@ class InterventionController:
         else:
             verification = self.adapter.verify(plans, observations, targets, edits, domains)
             self.validation_counts['full_checks'] += 1
+        vouched = False
         if not unchecked:
             self.validation_seconds += time.perf_counter() - started
-            if verification.status != "repairable" or not expected <= set(verification.covered_targets):
+            if accept_unknown and source == "human" and verification.status == "unknown":
+                baseline = self.adapter.verify(plans, observations, targets, [], domains)
+                vouched = may_vouch(baseline, verification)
+            if not vouched and (verification.status != "repairable"
+                                or not expected <= set(verification.covered_targets)):
                 self.event("commit_rejected", step, request_id=request_id, source=source,
                            reasons=verification.reasons, target_results=verification.target_results)
                 return False
+            if vouched:
+                self.validation_counts['human_vouched'] += 1
         self.commit_count += 1
         commit_id = f"commit_{self.commit_count:04d}"
         by_id = {response["id"]: response for response in responses}
@@ -190,7 +217,7 @@ class InterventionController:
         self.event("plan_applied", step, commit_id=commit_id, request_id=request_id, source=source,
                    edits=[asdict(edit) for edit in edits], targets=[asdict(target) for target in targets],
                    edited_agents=sorted({edit.agent_id for edit in edits}), interrupted_agents=interrupted,
-                   certificate_unchanged=already_verified, unchecked=unchecked,
+                   certificate_unchanged=already_verified, unchecked=unchecked, human_vouched=vouched,
                    **({"would_fail_check": would_fail} if unchecked else {}))
         return True
 
@@ -323,6 +350,8 @@ class InterventionController:
         if signature == self.last_request_key:
             return "no_new_review_scope"
         self.last_request_key = signature
+        accept_unknown = not edits and any("unknown" in analysis.get("signals", {}).get(target.target_id, [])
+                                           for target in targets)
         self.issued += 1
         request_id = f"review_{self.issued:04d}"
         step = agents[0].step
@@ -340,12 +369,15 @@ class InterventionController:
             "issued_at": time.time(),
             # Why each problem was worth asking about: choice, unknown, stalled (or stage, all).
             "trigger_signals": analysis.get("signals", {}),
+            # Facts are missing and nothing could be verified: the reviewer's judgement may
+            # stand in for the check (an edit known to fail is still rejected).
+            "accept_unknown": accept_unknown,
         }
         self.pending = {"id": request_id, "step": step, "scope": scope, "plans": plans,
                         "observations": snapshot_copy(observations), "targets": targets,
                         "domains": domains, "allowed_fields": allowed_fields,
                         "proposal": edits, "evidence": evidence, "started": self.clock(),
-                        "paused": set(), "goals": set(goals),
+                        "paused": set(), "goals": set(goals), "accept_unknown": accept_unknown,
                         "certificate": self.adapter.verify(plans, observations, targets, edits, domains)}
         for target in targets:
             self.last_asked[target.target_id] = step
@@ -395,7 +427,8 @@ class InterventionController:
                             and edits == pending['proposal'] and pending['evidence']['sufficient']
                             and related <= set(pending['evidence']['agents']))
                 accepted = self._commit(agents, observations, responses, plans, pending["targets"], edits,
-                                        pending["domains"], "human", pending["id"], already_verified=reusable)
+                                        pending["domains"], "human", pending["id"], already_verified=reusable,
+                                        accept_unknown=pending.get("accept_unknown", False))
                 status = "accepted" if accepted else "invalid"
             else:
                 status = "permission" if not permission else "stale_plan"

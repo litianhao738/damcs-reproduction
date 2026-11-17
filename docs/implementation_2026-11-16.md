@@ -90,6 +90,7 @@ CUBE 当前保留完整公开棋盘为一个事实组，不宣称已实现 CUBE 
 
 - 只针对被判为关键的问题；同一步的其他问题和所有未问人的情况都走同一个自动后备分支，事件 `review_skipped` 记录原因（`not_critical`、`cooldown`、`over_review_capacity` 等）。请求文件记录每个问题的触发信号（`trigger_signals`），审阅页面会显示。
 - H2 开放所选修复涉及的 Agent，并在不超过 `--review_max_agents` 的前提下加入其他已验证方案涉及的 Agent，开放字段取这些方案实际修改字段的并集，人可以在已验证的方案之间选择。`unknown` 时没有已验证方案，开放问题涉及的 Agent（诊断中的证据组），字段全部开放。确定修不了的问题不开放。
+- `unknown` 请求中，审阅者的修改检查结果仍为 unknown 时，只要它让至少一个"不改就确定修不好"的问题变得可能修好，就按审阅者的判断执行，记为 `human_vouched`；对任何问题都没有帮助、或会确定破坏其他工作的修改仍被拒绝。预检页面会提示属于哪种情况。
 - 同一问题问过之后 `--review_cooldown`（默认 10）步内不再重复问。
 
 其他选项：`--review_trigger stage` 使用环境适配器的固定名单（Crafter：做铁镐、采铁、采钻石，见 `review_domains.py` 的 `CRAFTER_CRITICAL_TARGETS`；CUBE：每次推箱失败）；`--review_trigger all` 对所有问题都问人，只用于练习；`--human_requests` 可设置每局上限，默认不设。
