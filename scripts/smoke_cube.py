@@ -50,7 +50,8 @@ class CubeChecks(unittest.TestCase):
             agent.op = plan.operation
 
     def controller(self, **kwargs):
-        return InterventionController(self.directory.name, environment='cube', **kwargs)
+        # The fixed scenes have one helper, so no review signal fires; ask about every problem.
+        return InterventionController(self.directory.name, environment='cube', **{'review_trigger': 'all', **kwargs})
 
     def fake_model(self, *texts):
         """Patch the CUBE agent's model call to return these reply texts in order."""

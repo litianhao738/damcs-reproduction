@@ -45,9 +45,14 @@ class CubeAdapter:
 
     @staticmethod
     def critical(target):
-        # Every failed push is critical: an episode has only a few blocks, and each
-        # delivery is a direct share of the team score.
+        # Fixed stage rule (``--review_trigger stage``): every failed push counts,
+        # since an episode has only a few blocks and each delivery is scored.
         return True
+
+    @staticmethod
+    def progress(info):
+        """Team progress for the stall signal: the team score."""
+        return next(iter(info.values() if isinstance(info, dict) else info))['cube']['team_score']
 
     def moves(self, plans, observations):
         return {}

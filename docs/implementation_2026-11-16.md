@@ -80,13 +80,19 @@ CUBE 当前保留完整公开棋盘为一个事实组，不宣称已实现 CUBE 
 
 审阅者的操作步骤和判断标准见 [审阅规程](review_protocol_2026-11-18.md)。
 
-2026-11-17 起，人审不再设每局次数额度，改为只在关键时刻问人（`--review_trigger critical`，默认）：
+2026-11-17 起，人审不再设每局次数额度，改为只在关键时刻问人。关键时刻默认由三个与环境无关的信号判断（`--review_trigger signals`），实现在 `InterventionController._signals`：
 
-- 关键时刻由环境适配器定义。Crafter 是钻石链最后一段的问题：做铁镐缺材料、采铁或采钻石缺工具（`review_domains.py` 中的 `CRAFTER_CRITICAL_TARGETS`）；CUBE 的每次推箱失败都算。
+- `choice`：能修好该问题的已验证方案改的是不同的 Agent 集合，需要人决定打断谁。
+- `unknown`：没有已验证方案，且搜索结果中存在因信息缺失而无法判定的范围。
+- `stalled`：环境适配器的 `progress` 连续 `--stall_steps`（默认 30）步没有增长。Crafter 的进度是全队解锁的不同成就数，CUBE 是团队得分。
+
+问人时：
+
+- 只针对被判为关键的问题；同一步的其他问题和所有未问人的情况都走同一个自动后备分支，事件 `review_skipped` 记录原因（`not_critical`、`cooldown`、`over_review_capacity` 等）。请求文件记录每个问题的触发信号（`trigger_signals`），审阅页面会显示。
+- H2 开放所选修复涉及的 Agent，并在不超过 `--review_max_agents` 的前提下加入其他已验证方案涉及的 Agent，开放字段取这些方案实际修改字段的并集，人可以在已验证的方案之间选择。`unknown` 时没有已验证方案，开放问题涉及的 Agent（诊断中的证据组），字段全部开放。确定修不了的问题不开放。
 - 同一问题问过之后 `--review_cooldown`（默认 10）步内不再重复问。
-- 问人时只针对关键问题；同一步的非关键问题和所有未问人的情况都走同一个自动后备分支，事件 `review_skipped` 记录原因（`not_critical`、`cooldown`、`over_review_capacity` 等）。
-- `--review_trigger all` 对所有问题都问人，只用于练习。
-- `--human_requests` 仍可设置一个每局上限，默认不设。
+
+其他选项：`--review_trigger stage` 使用环境适配器的固定名单（Crafter：做铁镐、采铁、采钻石，见 `review_domains.py` 的 `CRAFTER_CRITICAL_TARGETS`；CUBE：每次推箱失败）；`--review_trigger all` 对所有问题都问人，只用于练习；`--human_requests` 可设置每局上限，默认不设。
 
 阅读/修改时间单独记录。超时 120 秒。`--review_step_seconds` 控制等待期间每个环境步的现实时间，实验各组应保持一致。
 

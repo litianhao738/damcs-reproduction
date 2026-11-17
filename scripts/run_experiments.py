@@ -88,6 +88,7 @@ def build_matrix(args):
                    '--review_max_agents', str(args.review_max_agents),
                    *(['--human_requests', str(args.human_requests)] if args.human_requests is not None else []),
                    '--review_trigger', args.review_trigger, '--review_cooldown', str(args.review_cooldown),
+                   '--stall_steps', str(args.stall_steps),
                    '--evidence_mode', s['evidence_mode'], '--pause_mode', s['pause_mode'],
                    '--revalidation', s['revalidation'], '--scope_selection', s['scope_selection'],
                    '--reviewer', s['reviewer'], '--reviewer_id', args.reviewer_id,
@@ -107,7 +108,7 @@ def build_matrix(args):
                'scope_selection': s['scope_selection'], 'evidence_mode': s['evidence_mode'],
                'pause_mode': s['pause_mode'], 'revalidation': s['revalidation'],
                'human_requests': args.human_requests, 'review_trigger': args.review_trigger,
-               'review_cooldown': args.review_cooldown, 'step_limit': args.step_num}
+               'review_cooldown': args.review_cooldown, 'stall_steps': args.stall_steps, 'step_limit': args.step_num}
         if profile:
             run.update(profile_record(profile, settings_file))
         matrix.append(run)
@@ -161,7 +162,7 @@ def summarize_run(directory, step_limit=None):
     skipped = Counter(event.get('reason') for event in events if event['event'] == 'review_skipped')
     row = {key: config.get(key) for key in (
         'environment', 'condition', 'seed', 'repeat_id', 'reviewer', 'reviewer_id', 'scope_max_agents',
-        'review_max_agents', 'scope_selection', 'human_requests', 'review_trigger', 'review_cooldown',
+        'review_max_agents', 'scope_selection', 'human_requests', 'review_trigger', 'review_cooldown', 'stall_steps',
         'evidence_mode', 'pause_mode',
         'revalidation', 'source_sha256', 'git_head',
     )}
@@ -195,6 +196,8 @@ def summarize_run(directory, step_limit=None):
         'mean_edited_agents': sum(edited) / len(edited) if edited else None,
         'interrupted_plans': sum(len(event.get('interrupted_agents', [])) for event in applied),
         'over_review_capacity': skipped.get('over_review_capacity', 0),
+        **{f'requests_{signal}': sum(any(signal in found for found in review.get('trigger_signals', {}).values())
+                                     for review in reviews) for signal in ('choice', 'unknown', 'stalled')},
         'not_critical_skips': skipped.get('not_critical', 0),
         'planning_failures': sum(event['event'] == 'planning_failed' for event in events),
         **read_json(directory / 'model_usage.json'),
@@ -232,10 +235,13 @@ def get_parser():
                         help='Most agents one human review may open.')
     parser.add_argument('--human_requests', type=int, default=None,
                         help='Optional cap on review requests per episode. Default: no cap.')
-    parser.add_argument('--review_trigger', choices=['critical', 'all'], default='critical',
-                        help="'critical' asks a person only at critical moments; 'all' is for practice.")
+    parser.add_argument('--review_trigger', choices=['signals', 'stage', 'all'], default='signals',
+                        help="'signals' asks at choice, unknown or stalled moments; 'stage' uses the fixed list; "
+                             "'all' is for practice.")
     parser.add_argument('--review_cooldown', type=int, default=10,
                         help='Steps before the same problem may be asked about again.')
+    parser.add_argument('--stall_steps', type=int, default=30,
+                        help='Steps without team progress before open problems count as critical.')
     parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='local')
     parser.add_argument('--evidence_mode', choices=['full', 'compact'], default='compact')
     parser.add_argument('--revalidation', choices=['incremental', 'full', 'none'], default='incremental')

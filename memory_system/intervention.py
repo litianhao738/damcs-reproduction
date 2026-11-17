@@ -37,19 +37,26 @@ def choose_review_scope(analysis, strategy, capacity):
     """Agents a reviewer may edit; ``capacity`` caps what one person is asked to read."""
     if strategy == "verified":
         selected = analysis["selected"]
-        # The search has no cap; a minimal repair larger than the review cap is not sent.
-        return selected["edited_agents"] if selected and len(selected["edited_agents"]) <= capacity else []
+        # A review view may widen the scope to verified alternatives (or to an unverifiable
+        # scope); otherwise the selected repair. The search has no cap; a minimal repair
+        # larger than the review cap is not sent.
+        agents = analysis.get("review_agents") or (selected["edited_agents"] if selected else [])
+        return list(agents) if agents and len(agents) <= capacity else []
     if strategy == "owner":
         counts = Counter(target["agent_id"] for target in analysis["targets"])
         return sorted(counts, key=lambda agent_id: (-counts[agent_id], agent_id))[:capacity]
     raise ValueError(f"Unknown review strategy '{strategy}'; use 'verified' or 'owner'.")
 
 
+REVIEW_TRIGGERS = ("signals", "stage", "all")
+
+
 class InterventionController:
     def __init__(self, output_dir, mode="suggest", strategy="verified", capacity=2,
                  request_budget=None, timeout=120, pause_mode="global", evidence_mode="compact",
                  clock=time.monotonic, revalidation="incremental", environment="crafter",
-                 search_agents=None, selection="minimal", review_trigger="critical", review_cooldown=10):
+                 search_agents=None, selection="minimal", review_trigger="signals", review_cooldown=10,
+                 stall_steps=30):
         """``capacity``: most agents one review may open. ``search_agents``: cap on the
         automatic repair search (None searches the smallest sufficient scope, uncapped).
         ``selection``: ``minimal`` or the ``any`` ablation. ``revalidation``:
@@ -57,15 +64,23 @@ class InterventionController:
         edit without rechecking the current state (the check still runs, only to log
         whether it would have failed).
 
-        Human review has no request budget by default (``request_budget=None``).
-        ``review_trigger="critical"`` asks only at critical moments, as defined by the
-        environment adapter; ``"all"`` asks for every problem (used for practice).
+        Human review has no request budget by default (``request_budget=None``) and asks
+        only at critical moments. ``review_trigger`` decides which:
+
+        - ``"signals"`` (default, environment-independent): a problem is critical when
+          (1) ``choice``: verified repairs exist that change different agents, so someone
+          must weigh whom to divert; (2) ``unknown``: no repair could be verified because
+          facts are missing; or (3) ``stalled``: team progress (from the environment
+          adapter) has not grown for ``stall_steps`` steps.
+        - ``"stage"``: the adapter's fixed list of critical problems.
+        - ``"all"``: every problem (practice episodes).
+
         ``review_cooldown``: steps before the same problem may be asked again after a
         request about it, so one stuck problem does not ask every step."""
         if revalidation not in ("incremental", "full", "none"):
             raise ValueError("revalidation must be 'incremental', 'full' or 'none'")
-        if review_trigger not in ("critical", "all"):
-            raise ValueError("review_trigger must be 'critical' or 'all'")
+        if review_trigger not in REVIEW_TRIGGERS:
+            raise ValueError(f"review_trigger must be one of {REVIEW_TRIGGERS}")
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.review_dir = self.output_dir / "reviews"
@@ -74,7 +89,10 @@ class InterventionController:
         self.search_agents, self.selection = search_agents, selection
         self.request_budget, self.timeout = request_budget, timeout
         self.review_trigger, self.review_cooldown = review_trigger, review_cooldown
+        self.stall_steps = stall_steps
         self.last_asked = {}
+        # Team progress and the last step it grew, for the stall signal.
+        self.progress, self.last_progress_step = None, 0
         self.pause_mode, self.evidence_mode, self.clock = pause_mode, evidence_mode, clock
         self.revalidation = revalidation
         self.adapter = get_review_adapter(environment)
@@ -194,11 +212,12 @@ class InterventionController:
         """The part of a scope analysis worth a person's attention now.
 
         Keeps the critical problems that were not asked about within the cooldown,
-        and the candidates that repair at least one of them. Returns the view and
-        ``None``, or ``None`` and the reason no review is due.
+        the candidates that repair at least one of them, which signals made each
+        problem critical, and the agents a verified-scope review should open.
+        Returns the view and ``None``, or ``None`` and the reason no review is due.
         """
-        targets = [target for target in analysis["targets"]
-                   if self.review_trigger == "all" or self.adapter.critical(target)]
+        signals = {target["target_id"]: self._signals(target, analysis, step) for target in analysis["targets"]}
+        targets = [target for target in analysis["targets"] if signals[target["target_id"]]]
         if not targets:
             return None, "not_critical"
         targets = [target for target in targets
@@ -208,14 +227,54 @@ class InterventionController:
         wanted = {target["target_id"] for target in targets}
         candidates = [candidate for candidate in analysis["candidates"]
                       if wanted & set(candidate["covered_targets"])]
+
+        def preference(candidate):
+            # Same preference as the search: repair more of these problems, then edit fewer agents.
+            return (-len(wanted & set(candidate["covered_targets"])), -len(candidate["covered_targets"]),
+                    len(candidate["edited_agents"]), tuple(candidate["edited_agents"]))
+
         selected = analysis["selected"]
         if selected is None or not wanted & set(selected["covered_targets"]):
-            # Same preference as the search: repair more of these problems, then edit fewer agents.
-            selected = min(candidates, key=lambda candidate: (
-                -len(wanted & set(candidate["covered_targets"])), -len(candidate["covered_targets"]),
-                len(candidate["edited_agents"]), tuple(candidate["edited_agents"]),
-            )) if candidates else None
-        return {**analysis, "targets": targets, "candidates": candidates, "selected": selected}, None
+            selected = min(candidates, key=preference) if candidates else None
+        review_agents = None
+        if selected is not None:
+            # Open the selected repair plus verified alternatives that fit the review cap,
+            # so a reviewer can choose whom to divert.
+            review_agents = set(selected["edited_agents"])
+            for candidate in sorted(candidates, key=preference):
+                widened = review_agents | set(candidate["edited_agents"])
+                if len(widened) <= self.capacity:
+                    review_agents = widened
+        elif any("unknown" in signals[target["target_id"]] for target in targets):
+            # Nothing verified because facts are missing: open the agents involved in these
+            # problems (their evidence groups), within the review cap, so a person can use
+            # facts the search lacked. A problem known to be unrepairable opens nothing.
+            review_agents = set()
+            for target in targets:
+                widened = review_agents | set(target["evidence_agents"])
+                if len(widened) <= self.capacity:
+                    review_agents = widened
+            review_agents = review_agents or None
+        return {**analysis, "targets": targets, "candidates": candidates, "selected": selected,
+                "review_agents": sorted(review_agents) if review_agents else None,
+                "signals": {target_id: signals[target_id] for target_id in sorted(wanted)}}, None
+
+    def _signals(self, target, analysis, step):
+        """Why ``target`` deserves a person now; an empty list means it does not."""
+        if self.review_trigger == "all":
+            return ["all"]
+        if self.review_trigger == "stage":
+            return ["stage"] if self.adapter.critical(target) else []
+        found = []
+        covering = [candidate for candidate in analysis["candidates"]
+                    if target["target_id"] in candidate["covered_targets"]]
+        if len({frozenset(candidate["edited_agents"]) for candidate in covering}) >= 2:
+            found.append("choice")
+        if not covering and any(scope["status"] == "unknown" for scope in analysis.get("scope_results", [])):
+            found.append("unknown")
+        if step - self.last_progress_step >= self.stall_steps:
+            found.append("stalled")
+        return found
 
     def _request(self, agents, observations, responses, plans, analysis):
         """Issue one review request; return None, or the reason no request was sent."""
@@ -228,8 +287,12 @@ class InterventionController:
             return "no_new_review_scope"
         candidates = [candidate for candidate in analysis["candidates"]
                       if set(candidate["edited_agents"]) <= set(scope)]
-        proposal = min(candidates, key=lambda candidate: (-len(candidate["covered_targets"]),
-                                                        len(candidate["edited_agents"]))) if candidates else None
+        selected = analysis["selected"]
+        if selected is not None and set(selected["edited_agents"]) <= set(scope):
+            proposal = selected
+        else:
+            proposal = min(candidates, key=lambda candidate: (-len(candidate["covered_targets"]),
+                                                            len(candidate["edited_agents"]))) if candidates else None
         goals = proposal["covered_targets"] if proposal else [target["target_id"]
                  for target in analysis["targets"] if target["agent_id"] in scope
                  or set(target["evidence_agents"]) <= set(scope)]
@@ -239,8 +302,16 @@ class InterventionController:
         targets = [RepairTarget(**target) for target in analysis["targets"] if target["target_id"] in goals]
         edits = [Plan(**edit) for edit in proposal["edits"]] if proposal else []
         domains = {int(key): tuple(Plan(**plan) for plan in values) for key, values in analysis["domains"].items()}
-        allowed_fields = {agent_id: list(proposal["changed_fields"][agent_id])
-                          if self.strategy == "verified" and proposal else list(PLAN_FIELDS) for agent_id in scope}
+        if self.strategy == "verified" and candidates:
+            # Fields any verified repair inside the scope changes, so alternatives stay selectable.
+            changed = {agent_id: set() for agent_id in scope}
+            for candidate in candidates:
+                for agent_id, fields in candidate["changed_fields"].items():
+                    changed[int(agent_id)].update(fields)
+            allowed_fields = {agent_id: [field for field in PLAN_FIELDS if field in changed[agent_id]]
+                              or list(PLAN_FIELDS) for agent_id in scope}
+        else:
+            allowed_fields = {agent_id: list(PLAN_FIELDS) for agent_id in scope}
         original = {plan.agent_id: plan for plan in plans}
         domains = {agent_id: tuple(option for option in options
                                   if all(getattr(option, field) == getattr(original[agent_id], field)
@@ -267,6 +338,8 @@ class InterventionController:
             "timeout_seconds": self.timeout,
             # Wall-clock issue time, so the review page can show the time left.
             "issued_at": time.time(),
+            # Why each problem was worth asking about: choice, unknown, stalled (or stage, all).
+            "trigger_signals": analysis.get("signals", {}),
         }
         self.pending = {"id": request_id, "step": step, "scope": scope, "plans": plans,
                         "observations": snapshot_copy(observations), "targets": targets,
@@ -282,7 +355,7 @@ class InterventionController:
         self.review_preparation_seconds += time.perf_counter() - started
         self.event("review_requested", step, request_id=request_id, scope=scope,
                    pause_agents=document["pause_agents"], remaining_requests=document["remaining_requests"],
-                   evidence_groups=evidence["fact_groups_after"])
+                   evidence_groups=evidence["fact_groups_after"], trigger_signals=document["trigger_signals"])
         return None
 
     def _resolve(self, agents, observations, responses, plans):
@@ -386,6 +459,10 @@ class InterventionController:
         return self._guard(agents, observations, responses, effective)
 
     def observe(self, before, after, agents, step):
+        progress = self.adapter.progress(after)
+        if self.progress is not None and progress > self.progress:
+            self.last_progress_step = step
+        self.progress = progress if self.progress is None else max(self.progress, progress)
         paused = [agent.id for agent in agents if agent.review_paused]
         self.paused_agent_steps += len(paused)
         self.event("environment_transition", step, actions=[agent.action for agent in agents], paused_agents=paused)
@@ -413,7 +490,8 @@ class InterventionController:
                    "termination_reason": reason, "mode": self.mode, "strategy": self.strategy,
                    "pause_mode": self.pause_mode, "evidence_mode": self.evidence_mode,
                    "revalidation": self.revalidation, "environment": self.adapter.name,
-                   "review_trigger": self.review_trigger, "review_cooldown": self.review_cooldown}
+                   "review_trigger": self.review_trigger, "review_cooldown": self.review_cooldown,
+                   "stall_steps": self.stall_steps}
         summary['validation_counts'] = dict(self.validation_counts)
         summary['validation_seconds'] = self.validation_seconds
         summary['review_preparation_seconds'] = self.review_preparation_seconds

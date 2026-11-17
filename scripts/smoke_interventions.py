@@ -48,11 +48,87 @@ class InterventionChecks(unittest.TestCase):
                 for plan in self.plans]
 
     def controller(self, **kwargs):
-        # The wood-pickaxe scenario is not a critical moment, so most checks ask for every problem.
+        # The base wood-pickaxe scenario has one way to repair it, so it raises no review
+        # signal; most checks ask about every problem instead.
         return InterventionController(self.output, **{'review_trigger': 'all', **kwargs})
 
+    def signal_controller(self, **kwargs):
+        controller = InterventionController(self.output, mode='human', **kwargs)
+        self.assertEqual((controller.review_trigger, controller.request_budget), ('signals', None))
+        return controller
+
+    def request_document(self, controller, number=1):
+        return json.loads((controller.review_dir / f'review_{number:04d}.json').read_text(encoding='utf-8'))
+
+    def test_single_obvious_repair_is_not_asked(self):
+        controller = self.signal_controller()
+        self.prepare(controller)
+        self.assertEqual(controller.issued, 0)
+        self.assertEqual(controller.commits[-1]['source'], 'auto')
+        skipped = next(event for event in self.events() if event['event'] == 'review_skipped')
+        self.assertEqual(skipped['reason'], 'not_critical')
+
+    def test_choice_signal_opens_the_verified_alternatives(self):
+        # Agents 1 and 2 both hold wood: someone has to decide whom to divert.
+        self.fixture.players[2].inventory['wood'] = 1
+        self.obs = self.fixture.observations()
+        self.analysis = generate_scope_candidates(self.plans, self.obs)
+        controller = self.signal_controller()
+        self.prepare(controller)
+        request = self.request_document(controller)
+        self.assertEqual(request['trigger_signals'], {'0:make:wood_pickaxe': ['choice']})
+        self.assertEqual(request['edit_agents'], [1, 2])
+        self.assertEqual([edit['agent_id'] for edit in request['proposal']], [1])
+        self.assertIsNone(request['remaining_requests'])
+        address = self.serve(controller)
+        with urlopen(address + '/review?id=review_0001') as response:
+            self.assertIn('要做取舍', response.read().decode('utf-8'))
+        # The reviewer picks the other verified helper instead of the proposal.
+        helper = Plan(2, 'share', 'not_applicable', 'wood', 0)
+        self.respond(controller, decision='edit', edits=[helper])
+        self.assertEqual(self.agents[2].op, 'share')
+        self.assertEqual(self.agents[1].op, 'make_wood_pickaxe')
+        self.transition(controller)
+        self.assertEqual(self.fixture.players[0].achievements['make_wood_pickaxe'], 1)
+        self.assertEqual(self.fixture.players[1].achievements['make_wood_pickaxe'], 1)
+
+    def test_unknown_signal_opens_the_agents_involved(self):
+        self.obs[1]['inventory'] = None
+        self.analysis = generate_scope_candidates(self.plans, self.obs)
+        controller = self.signal_controller()
+        self.prepare(controller)
+        request = self.request_document(controller)
+        # Agent 1's inventory is hidden, so its own crafting is unverifiable too.
+        self.assertEqual(request['trigger_signals'], {'0:make:wood_pickaxe': ['unknown'],
+                                                      '1:make:wood_pickaxe': ['unknown']})
+        self.assertEqual((request['edit_agents'], request['proposal']), ([0, 1], []))
+        self.assertEqual(request['allowed_fields']['1'], ['operation', 'material', 'item', 'recipient'])
+
+    def test_stalled_signal_asks_after_steps_without_team_progress(self):
+        controller = self.signal_controller(stall_steps=30)
+        for agent in self.agents:
+            agent.step = 29
+        self.prepare(controller)
+        self.assertEqual(controller.issued, 0)
+        for agent in self.agents:
+            agent.step = 30
+        self.prepare(controller)
+        self.assertEqual(self.request_document(controller)['trigger_signals'], {'0:make:wood_pickaxe': ['stalled']})
+
+    def test_team_progress_resets_the_stall_clock(self):
+        controller = self.signal_controller(stall_steps=30)
+        before = [{'achievements': {'collect_wood': 0}}]
+        controller.observe(before, before, self.agents, 0)
+        controller.observe(before, [{'achievements': {'collect_wood': 1}}], self.agents, 25)
+        controller.observe(before, [{'achievements': {'collect_wood': 3}}], self.agents, 28)
+        self.assertEqual(controller.last_progress_step, 25)
+        for agent in self.agents:
+            agent.step = 50
+        self.prepare(controller)
+        self.assertEqual(controller.issued, 0)
+
     def use_iron_pickaxe_scenario(self):
-        """A critical moment: Agent 0 can make the iron pickaxe once Agents 1 and 2 share wood and coal."""
+        """Agent 0 can make the iron pickaxe once Agents 1 and 2 share wood and coal."""
         self.fixture.make_env()
         x, y = self.fixture.players[0].pos
         self.fixture.world[(x + 1, y + 1)] = 'furnace'
@@ -64,8 +140,8 @@ class InterventionChecks(unittest.TestCase):
         self.obs = self.fixture.observations()
         self.analysis = generate_scope_candidates(self.plans, self.obs)
 
-    def test_problem_outside_critical_moments_is_repaired_without_asking(self):
-        controller = self.controller(mode='human', review_trigger='critical')
+    def test_stage_rule_skips_problems_outside_its_list(self):
+        controller = self.controller(mode='human', review_trigger='stage')
         self.prepare(controller)
         self.assertEqual(controller.issued, 0)
         self.assertIsNone(controller.pending)
@@ -73,23 +149,21 @@ class InterventionChecks(unittest.TestCase):
         skipped = next(event for event in self.events() if event['event'] == 'review_skipped')
         self.assertEqual(skipped['reason'], 'not_critical')
 
-    def test_critical_moment_is_asked_without_a_request_budget(self):
+    def test_stage_rule_asks_about_the_iron_pickaxe(self):
         self.use_iron_pickaxe_scenario()
-        controller = InterventionController(self.output, mode='human')
-        self.assertEqual((controller.review_trigger, controller.request_budget), ('critical', None))
+        controller = self.controller(mode='human', review_trigger='stage')
         self.prepare(controller)
         self.assertEqual(controller.issued, 1)
-        request = json.loads((controller.review_dir / 'review_0001.json').read_text(encoding='utf-8'))
+        request = self.request_document(controller)
         self.assertEqual(request['edit_agents'], [1, 2])
-        self.assertEqual([target['target_id'] for target in request['targets']], ['0:make:iron_pickaxe'])
-        self.assertIsNone(request['remaining_requests'])
+        self.assertEqual(request['trigger_signals'], {'0:make:iron_pickaxe': ['stage']})
         self.respond(controller)
         self.transition(controller)
         self.assertEqual(self.fixture.players[0].achievements['make_iron_pickaxe'], 1)
 
-    def test_same_critical_problem_waits_for_the_cooldown(self):
+    def test_same_problem_waits_for_the_cooldown(self):
         self.use_iron_pickaxe_scenario()
-        controller = InterventionController(self.output, mode='human', review_cooldown=10)
+        controller = self.controller(mode='human', review_cooldown=10)
         self.prepare(controller)
         self.respond(controller, decision='reject')
         self.prepare(controller)

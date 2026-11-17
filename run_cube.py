@@ -124,7 +124,8 @@ def main():
         output, mode=args.scope_mode, strategy=args.review_strategy, capacity=args.review_max_agents,
         search_agents=args.scope_max_agents, selection=args.scope_selection,
         request_budget=args.human_requests, review_trigger=args.review_trigger,
-        review_cooldown=args.review_cooldown, timeout=args.review_timeout, pause_mode=args.pause_mode,
+        review_cooldown=args.review_cooldown, stall_steps=args.stall_steps, timeout=args.review_timeout,
+        pause_mode=args.pause_mode,
         evidence_mode=args.evidence_mode, revalidation=args.revalidation, environment='cube',
     )
     write_json(output / 'config.json', experiment_config(args, 'cube'))

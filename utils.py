@@ -637,11 +637,14 @@ def get_arg_parser():
     parser.add_argument('--repeat_id', type=int, default=0)
     parser.add_argument('--human_requests', type=int, default=None,
                         help='Optional cap on review requests per episode. Default: no cap.')
-    parser.add_argument('--review_trigger', choices=['critical', 'all'], default='critical',
-                        help="Ask a person only at critical moments (default), or for every problem ('all', "
-                             "for practice episodes).")
+    parser.add_argument('--review_trigger', choices=['signals', 'stage', 'all'], default='signals',
+                        help="When to ask a person. 'signals' (default): the automatic repair must choose whom "
+                             "to divert, cannot verify a repair, or the team has stalled. 'stage': the "
+                             "environment's fixed list of critical problems. 'all': every problem (practice).")
     parser.add_argument('--review_cooldown', type=int, default=10,
                         help='Steps before the same problem may be asked about again (default: 10).')
+    parser.add_argument('--stall_steps', type=int, default=30,
+                        help='Steps without team progress before every open problem counts as critical (default: 30).')
     parser.add_argument('--review_strategy', choices=['verified', 'owner'], default='verified',
                         help="Which agents a review opens: 'verified' repair scope (H2) or problem 'owner' (H1).")
     parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='global')

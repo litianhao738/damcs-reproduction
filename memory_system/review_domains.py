@@ -8,9 +8,9 @@ from .review_evidence import (
 )
 
 
-# Critical moments for human review in Crafter: the last stage of the diamond chain.
-# A problem here (no iron pickaxe, no tool for iron or diamond) blocks the team goal directly;
-# earlier problems (wood, stone, coal) are left to the automatic repair.
+# Fixed stage rule, kept as the optional ``--review_trigger stage``: the last stage of the
+# diamond chain (no iron pickaxe, no tool for iron or diamond). The default rule uses
+# environment-independent signals instead (see InterventionController).
 CRAFTER_CRITICAL_TARGETS = frozenset({"make:iron_pickaxe", "collect:iron", "collect:diamond"})
 
 
@@ -20,6 +20,15 @@ class CrafterAdapter:
     @staticmethod
     def critical(target):
         return f"{target['kind']}:{target['subject']}" in CRAFTER_CRITICAL_TARGETS
+
+    @staticmethod
+    def progress(info):
+        """Team progress for the stall signal: how many distinct achievements any agent has unlocked.
+
+        Repeating an achievement (collecting more wood) is not progress.
+        """
+        observations = info.values() if isinstance(info, dict) else info
+        return len({name for obs in observations for name, count in obs['achievements'].items() if count > 0})
     generate = staticmethod(generate_scope_candidates)
     verify = staticmethod(verify_joint_repair)
     dependencies = staticmethod(dependency_agents)

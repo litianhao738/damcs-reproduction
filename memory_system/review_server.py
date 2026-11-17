@@ -37,6 +37,11 @@ STATUS_NAMES = {
     "reject": "已跳过", "episode_ended": "本局已结束",
 }
 
+SIGNAL_NAMES = {
+    "choice": "要做取舍，有几个 Agent 都能帮忙，请决定让谁去", "unknown": "拿不准，系统缺少信息",
+    "stalled": "团队卡住，已经很久没有新进展", "stage": "处于关键阶段", "all": "练习模式",
+}
+
 LIST_SCRIPT = """
 const KEY_AUTO = 'review-auto-open';
 let known = null, audio = null;
@@ -207,8 +212,14 @@ class ReviewHandler(BaseHTTPRequestHandler):
             fields.append(f'<tr><td>{agent_id}</td><td>{escape(_label(originals[agent_id]))}</td>'
                           f'<td><select name="agent_{agent_id}">{choices}</select></td>'
                           f'<td>{escape(", ".join(request["allowed_fields"][str(agent_id)]))}</td></tr>')
-        goals = ''.join(f'<li>Agent {target["agent_id"]}: {target["kind"]} {escape(target["subject"])}</li>'
-                        for target in request["targets"])
+        signals = request.get("trigger_signals", {})
+
+        def reason(target):
+            names = [SIGNAL_NAMES.get(signal, signal) for signal in signals.get(target["target_id"], [])]
+            return f'<span class="note">（为什么问你：{escape("、".join(names))}）</span>' if names else ''
+
+        goals = ''.join(f'<li>Agent {target["agent_id"]}: {target["kind"]} {escape(target["subject"])} '
+                        f'{reason(target)}</li>' for target in request["targets"])
         evidence = request["evidence"]
 
         def display_fact(key, value):
