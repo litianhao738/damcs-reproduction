@@ -7,7 +7,9 @@ from time import perf_counter
 
 from third_party.coop2_cube.env.env import Block, CoopBlockPush
 from .coordination import Plan
-from .repair_scopes import RepairTarget, ScopeCandidate, ScopeSearch, select_repair_scope
+from .repair_scopes import (
+    SCOPE_SELECTIONS, RepairTarget, ScopeCandidate, ScopeSearch, select_any_repair, select_repair_scope,
+)
 
 
 OPERATIONS = ('noop', 'move_up', 'move_down', 'move_left', 'move_right')
@@ -62,7 +64,9 @@ class CubeAdapter:
                                         f'{block.id}:{direction}', True, {'participants': block.weight}, related))
         return targets
 
-    def generate(self, plans, observations, max_scope_agents=None, editable_agents=None):
+    def generate(self, plans, observations, max_scope_agents=None, editable_agents=None, selection='minimal'):
+        if selection not in SCOPE_SELECTIONS:
+            raise ValueError(f'selection must be one of {SCOPE_SELECTIONS}')
         started = perf_counter()
         targets = self.targets(plans, observations)
         editable = set(observations) if editable_agents is None else set(editable_agents)
@@ -75,7 +79,8 @@ class CubeAdapter:
         all_targets = {target.target_id for target in targets}
 
         def covered_all():
-            return any(set(result.covered_targets) >= all_targets for result in candidates.values())
+            return selection == 'minimal' and any(
+                set(result.covered_targets) >= all_targets for result in candidates.values())
 
         for scope in (scope for level in search.levels(covered_all) for scope in level) if targets else []:
             scopes.append(scope)
@@ -94,7 +99,8 @@ class CubeAdapter:
             set(other.changed_fields) < set(candidate.changed_fields)
             and set(other.covered_targets) >= set(candidate.covered_targets) for other in values
         )]
-        selected = select_repair_scope(minimal, targets, max_scope_agents)
+        selected = select_repair_scope(minimal, targets, max_scope_agents) if selection == 'minimal' \
+            else select_any_repair(values, targets)
         summaries = [{'agents': scope, 'status': 'repairable' if any(
             'repairable' in results for subset, results in exact.items() if set(subset) <= set(scope)
         ) else 'infeasible'} for scope in scopes] if targets else []
@@ -102,7 +108,7 @@ class CubeAdapter:
                 'domains': {key: [asdict(plan) for plan in domain] for key, domain in domains.items()},
                 'candidates': [candidate.to_dict() for candidate in minimal], 'scope_results': summaries,
                 'selected': selected.to_dict() if selected else None, 'horizon': 1,
-                **search.report(), 'assignments_evaluated': count,
+                **search.report(), 'selection': selection, 'assignments_evaluated': count,
                 'status': 'repairable' if selected else 'infeasible' if targets else 'no_targets',
                 'elapsed_seconds': perf_counter() - started}
 

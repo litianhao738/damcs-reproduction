@@ -110,6 +110,18 @@ If your Qwen credentials are in the local CSV supported by the Windows launcher,
 
 The launcher runs from the project directory, streams progress, and returns Python's exit code.
 
+### Other vendors and named model profiles
+
+`LLM_PROVIDER=compatible` targets any OpenAI-compatible chat endpoint (DeepSeek, Kimi, GLM, OpenAI) with `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_CHAT_MODEL`. Such endpoints return JSON that is validated locally and retried with the error (`LLM_JSON_MODE=json_object`). `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL` and `EMBEDDING_MODEL` send embedding calls to a separate endpoint, so chat models can change while the embedding model stays fixed. `LLM_GENERATE_KWARGS` adds JSON request fields such as temperature to every chat call.
+
+For experiments, use the named profiles in [config/model_profiles.json](config/model_profiles.json) instead of setting variables by hand. The file holds model names, endpoints and prices; keys stay in environment variables, `local_config/api_keys.json`, or the existing Qwen CSV.
+
+```powershell
+python scripts\run_with_model.py --profile qwen        # print the resolved configuration, no keys
+python scripts\run_with_model.py --profile kimi run.py --condition A --step_num 20 --results_dir results\trial_kimi --no_plot
+python scripts\run_experiments.py --model_profiles qwen deepseek --conditions A B C --seeds 4 --dry_run
+```
+
 ## Run the reproduction
 
 Start with a short run and a dedicated output directory:
@@ -280,7 +292,7 @@ Crafter compact evidence removes inventory/view groups only when the declared on
 
 Each episode saves `config.json` (seed, condition, source hashes and model names), `model_usage.json`, `events.jsonl`, `intervention_summary.json`, immutable requests under `reviews/`, and replayable submitted-state snapshots under `failures/`. Logs distinguish approval, commit, actual target recovery and final task success. Batch runs export `episodes.json` and `episodes.csv`, retaining failed episodes and process exit codes. Use `--summarize_only` to regenerate the exports.
 
-Batch ablations: `--suite capacity --conditions C H2`, `--suite evidence --conditions H2`, and `--suite waiting --conditions H2`. Frozen-snapshot evaluation also compares individual problem witnesses with joint consistency; it is an offline diagnostic ablation, not a full-task performance claim. Use an episode as the statistical unit and record reviewer identities separately for a real human study.
+The planned result tables, their commands and the exported fields are in [docs/experiment_tables_2026-11-17.md](docs/experiment_tables_2026-11-17.md). `--suite ablation` runs the component ablations (no replanning, any-feasible scope selection, and the scripted-review variants for waiting and rechecking, including `--revalidation none`). Other batch sweeps: `--suite capacity --conditions C H2`, `--suite evidence --conditions H2`, and `--suite waiting --conditions H2`. Frozen-snapshot evaluation also compares individual problem witnesses with joint consistency; it is an offline diagnostic ablation, not a full-task performance claim. Use an episode as the statistical unit and record reviewer identities separately for a real human study.
 
 ### CUBE transfer check
 

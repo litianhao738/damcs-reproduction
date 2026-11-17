@@ -1,9 +1,19 @@
-"""Sequential paired-seed experiment matrix and episode-level result export."""
+"""Sequential paired-seed experiment matrix and episode-level result export.
+
+Suites:
+  main       conditions x seeds x repeats (tables 1 and 3)
+  ablation   the fixed component ablations of table 2 (ignores --conditions)
+  capacity / evidence / waiting   earlier single-factor sweeps
+With --model_profiles, every run is repeated per named profile from
+config/model_profiles.json (table 3). Keys are resolved only when a run starts.
+"""
 
 import argparse
+from collections import Counter
 import csv
 from itertools import product
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from memory_system.experiments import CONDITIONS
 from memory_system.intervention import write_json
+from memory_system.model_profiles import episode_cost, load_profiles, profile_env, profile_record
 
 
 def positive_int(value):
@@ -22,37 +33,81 @@ def positive_int(value):
     return number
 
 
-def build_matrix(args):
-    variants = [(args.scope_max_agents, args.evidence_mode, args.pause_mode, args.revalidation)]
+# Table 2: each row changes one component of the full system and nothing else.
+# The automatic rows start from C; the review rows start from H2 with a scripted reviewer.
+ABLATIONS = [
+    ('C-no-replan', 'custom', {'coordination_mode': 'repair', 'repair_rounds': 0,
+                               'scope_mode': 'auto', 'review_strategy': 'verified'}),
+    ('C-any-scope', 'C', {'scope_selection': 'any'}),
+    ('H2script', 'H2', {'reviewer': 'scripted'}),
+    ('H2script-global-wait', 'H2', {'reviewer': 'scripted', 'pause_mode': 'global'}),
+    ('H2script-no-wait', 'H2', {'reviewer': 'scripted', 'pause_mode': 'none'}),
+    ('H2script-full-recheck', 'H2', {'reviewer': 'scripted', 'revalidation': 'full'}),
+    ('H2script-no-recheck', 'H2', {'reviewer': 'scripted', 'revalidation': 'none'}),
+]
+
+# Crafter milestone columns written by run.py, in task order.
+MILESTONES = ['Collect wood', 'Place table', 'Make wood pickaxe', 'Collect stone', 'Make stone pickaxe',
+              'Collect iron', 'Collect coal', 'Place furnace', 'Make iron pickaxe', 'Collect diamond']
+
+
+def variants(args):
+    base = {'scope_max_agents': args.scope_max_agents, 'evidence_mode': args.evidence_mode,
+            'pause_mode': args.pause_mode, 'revalidation': args.revalidation,
+            'scope_selection': 'minimal', 'reviewer': args.reviewer}
+    if args.suite == 'ablation':
+        return [(tag, condition, {**base, **override}) for tag, condition, override in ABLATIONS]
     if args.suite == 'capacity':
-        variants = [(k, args.evidence_mode, args.pause_mode, args.revalidation) for k in (1, 2, None)]
+        settings = [{**base, 'scope_max_agents': k} for k in (1, 2, None)]
     elif args.suite == 'evidence':
-        variants = [(args.scope_max_agents, evidence, args.pause_mode, args.revalidation) for evidence in ('full', 'compact')]
+        settings = [{**base, 'evidence_mode': evidence} for evidence in ('full', 'compact')]
     elif args.suite == 'waiting':
-        variants = [(args.scope_max_agents, args.evidence_mode, pause, validation)
+        settings = [{**base, 'pause_mode': pause, 'revalidation': validation}
                     for pause, validation in (('global', 'full'), ('none', 'full'), ('local', 'incremental'))]
+    else:
+        settings = [base]
+    return [(condition, condition, setting) for condition in args.conditions for setting in settings]
+
+
+def build_matrix(args):
+    profiles = args.model_profiles or [None]
+    settings_file = load_profiles() if args.model_profiles else None
     matrix = []
-    for condition, seed, repeat, (k, evidence, pause, validation) in product(
-            args.conditions, args.seeds, range(args.repeats), variants):
-        label = f'{condition}_seed{seed}_r{repeat}_k{"all" if k is None else k}_{evidence}_{pause}_{validation}'
+    for profile, (tag, condition, s), seed, repeat in product(
+            profiles, variants(args), args.seeds, range(args.repeats)):
+        k = s['scope_max_agents']
+        parts = ([profile] if profile else []) + [
+            tag, f'seed{seed}', f'r{repeat}', f'k{"all" if k is None else k}',
+            s['evidence_mode'], s['pause_mode'], s['revalidation']]
+        label = '_'.join(parts + (['any'] if s['scope_selection'] == 'any' else []))
         directory = Path(args.results_dir).resolve() / label
         command = [sys.executable, '-B', str(ROOT / ('run_cube.py' if args.environment == 'cube' else 'run.py')),
                    '--condition', condition, '--seed', str(seed), '--repeat_id', str(repeat),
                    '--agent_num', str(args.agent_num), '--step_num', str(args.step_num),
                    *(['--scope_max_agents', str(k)] if k is not None else []),
                    '--review_max_agents', str(args.review_max_agents), '--human_requests', str(args.human_requests),
-                   '--evidence_mode', evidence, '--pause_mode', pause, '--revalidation', validation,
-                   '--reviewer', args.reviewer, '--review_timeout', str(args.review_timeout),
+                   '--evidence_mode', s['evidence_mode'], '--pause_mode', s['pause_mode'],
+                   '--revalidation', s['revalidation'], '--scope_selection', s['scope_selection'],
+                   '--reviewer', s['reviewer'], '--reviewer_id', args.reviewer_id,
+                   '--review_timeout', str(args.review_timeout),
                    '--review_step_seconds', str(args.review_step_seconds),
                    '--scripted_delay_steps', str(args.scripted_delay_steps),
                    '--results_dir', str(directory), '--no_plot']
+        if condition == 'custom':
+            command += ['--coordination_mode', s['coordination_mode'], '--repair_rounds', str(s['repair_rounds']),
+                        '--scope_mode', s['scope_mode'], '--review_strategy', s['review_strategy']]
         if args.environment == 'cube':
             command += ['--grid_size', str(args.grid_size), '--block_specs', args.block_specs]
-        matrix.append({'run_id': label, 'directory': str(directory), 'command': command,
-                       'environment': args.environment, 'condition': condition, 'seed': seed, 'repeat_id': repeat,
-                       'reviewer': args.reviewer, 'scope_max_agents': k,
-                       'review_max_agents': args.review_max_agents, 'evidence_mode': evidence,
-                       'pause_mode': pause, 'revalidation': validation, 'human_requests': args.human_requests})
+        run = {'run_id': label, 'directory': str(directory), 'command': command,
+               'environment': args.environment, 'variant': tag, 'condition': condition, 'seed': seed,
+               'repeat_id': repeat, 'reviewer': s['reviewer'], 'reviewer_id': args.reviewer_id,
+               'scope_max_agents': k, 'review_max_agents': args.review_max_agents,
+               'scope_selection': s['scope_selection'], 'evidence_mode': s['evidence_mode'],
+               'pause_mode': s['pause_mode'], 'revalidation': s['revalidation'],
+               'human_requests': args.human_requests, 'step_limit': args.step_num}
+        if profile:
+            run.update(profile_record(profile, settings_file))
+        matrix.append(run)
     return matrix
 
 
@@ -67,7 +122,27 @@ def json_lines(path):
                 yield json.loads(line)
 
 
-def summarize_run(directory):
+def milestone_steps(directory, step_limit):
+    """First step of each Crafter milestone from run.py's all_rounds_stats.csv."""
+    path = Path(directory) / 'all_rounds_stats.csv'
+    if not path.exists():
+        return {}
+    with path.open(encoding='utf-8', newline='') as stream:
+        rows = list(csv.DictReader(stream))
+    if not rows:
+        return {}
+    row = rows[-1]
+    steps = {name: float(row[name]) if row.get(name) not in (None, '') else None for name in MILESTONES}
+    diamond = steps['Collect diamond']
+    result = {'milestones_reached': sum(value is not None for value in steps.values()),
+              'diamond_step': diamond, 'diamond_censored': diamond is None,
+              # Censored at the step limit when no diamond was collected.
+              'diamond_step_or_limit': diamond if diamond is not None else step_limit}
+    result.update({'step_' + name.lower().replace(' ', '_'): value for name, value in steps.items()})
+    return result
+
+
+def summarize_run(directory, step_limit=None):
     directory = Path(directory)
     config = read_json(directory / 'config.json')
     summary = read_json(directory / 'intervention_summary.json')
@@ -79,16 +154,25 @@ def summarize_run(directory):
     target_snapshots = [analysis for analysis in analyses if analysis['targets']]
     reviews = [read_json(path) for path in sorted((directory / 'reviews').glob('review_[0-9][0-9][0-9][0-9].json'))]
     replies = [event for event in events if event['event'] == 'review_resolved']
+    applied = [event for event in events if event['event'] == 'plan_applied']
+    skipped = Counter(event.get('reason') for event in events if event['event'] == 'review_skipped')
     row = {key: config.get(key) for key in (
-        'environment', 'condition', 'seed', 'repeat_id', 'reviewer', 'scope_max_agents', 'review_max_agents',
-        'human_requests', 'evidence_mode', 'pause_mode', 'revalidation', 'source_sha256',
+        'environment', 'condition', 'seed', 'repeat_id', 'reviewer', 'reviewer_id', 'scope_max_agents',
+        'review_max_agents', 'scope_selection', 'human_requests', 'evidence_mode', 'pause_mode',
+        'revalidation', 'source_sha256', 'git_head',
     )}
+    models = config.get('models') or {}
+    row['config_chat_model'] = models.get('LLM_CHAT_MODEL') or models.get('QWEN_CHAT_MODEL') \
+        or models.get('OPENAI_MODEL')
+    row['config_model_profile'] = models.get('MODEL_PROFILE')
     row.update({key: summary.get(key) for key in (
         'total_steps', 'task_success', 'termination_reason', 'requests_issued', 'human_seconds', 'commits',
         'paused_agent_steps', 'team_score', 'total_reward',
         'validation_seconds', 'review_preparation_seconds',
     )})
     outcomes = summary.get('outcomes', [])
+    edited = [len(event.get('edited_agents') or {edit['agent_id'] for edit in event['edits']})
+              for event in applied]
     row.update({
         'run_dir': str(directory), 'completed': bool(summary),
         'target_snapshots': len(target_snapshots),
@@ -104,9 +188,15 @@ def summarize_run(directory):
         'invalid_replies': sum(reply['status'] in ('invalid', 'permission', 'stale_plan') for reply in replies),
         'timeouts': sum(reply['status'] == 'timeout' for reply in replies),
         'recoveries': sum(outcome['recovered'] for outcome in outcomes), 'recovery_attempts': len(outcomes),
+        'mean_edited_agents': sum(edited) / len(edited) if edited else None,
+        'interrupted_plans': sum(len(event.get('interrupted_agents', [])) for event in applied),
+        'over_review_capacity': skipped.get('over_review_capacity', 0),
         **read_json(directory / 'model_usage.json'),
     })
+    row.update({f'reply_{status}': count for status, count in
+                Counter(reply['status'] for reply in replies).items()})
     row.update({f'validation_{key}': value for key, value in summary.get('validation_counts', {}).items()})
+    row.update(milestone_steps(directory, step_limit))
     return row
 
 
@@ -120,12 +210,14 @@ def export_rows(output, rows):
 
 
 def get_parser():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--environment', choices=['crafter', 'cube'], default='crafter')
     parser.add_argument('--conditions', nargs='+', choices=list(CONDITIONS), default=['A', 'B', 'C', 'H0', 'H1', 'H2'])
     parser.add_argument('--seeds', type=int, nargs='+', default=[4, 5, 6])
     parser.add_argument('--repeats', type=int, default=1)
-    parser.add_argument('--suite', choices=['main', 'capacity', 'evidence', 'waiting'], default='main')
+    parser.add_argument('--suite', choices=['main', 'ablation', 'capacity', 'evidence', 'waiting'], default='main')
+    parser.add_argument('--model_profiles', nargs='+', default=None,
+                        help='Named profiles from config/model_profiles.json; default: the current environment.')
     parser.add_argument('--agent_num', type=int, default=6)
     parser.add_argument('--step_num', type=int, default=350)
     parser.add_argument('--scope_max_agents', type=positive_int, default=None,
@@ -133,10 +225,11 @@ def get_parser():
     parser.add_argument('--review_max_agents', type=positive_int, default=2,
                         help='Most agents one human review may open.')
     parser.add_argument('--human_requests', type=int, default=3)
-    parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='global')
+    parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='local')
     parser.add_argument('--evidence_mode', choices=['full', 'compact'], default='compact')
-    parser.add_argument('--revalidation', choices=['incremental', 'full'], default='incremental')
+    parser.add_argument('--revalidation', choices=['incremental', 'full', 'none'], default='incremental')
     parser.add_argument('--reviewer', choices=['human', 'scripted'], default='human')
+    parser.add_argument('--reviewer_id', default='', help='Recorded with every run of this batch.')
     parser.add_argument('--review_timeout', type=float, default=120)
     parser.add_argument('--review_step_seconds', type=float, default=1)
     parser.add_argument('--scripted_delay_steps', type=int, default=2)
@@ -157,23 +250,32 @@ def main():
         write_json(output / 'matrix.json', matrix)
     if args.dry_run:
         for run in matrix:
-            print(subprocess.list2cmdline(run['command']))
+            prefix = f"[{run['model_profile']}] " if run.get('model_profile') else ''
+            print(prefix + subprocess.list2cmdline(run['command']))
         return
     if args.summarize_only:
         matrix = read_json(output / 'matrix.json')
+    else:
+        # Fail before the first run if any profile lacks a model name or key.
+        for name in sorted({run['model_profile'] for run in matrix if run.get('model_profile')}):
+            profile_env(name)
     rows = []
     for run in matrix:
         directory = Path(run['directory'])
         if not args.summarize_only:
+            env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
+            if run.get('model_profile'):
+                env.update(profile_env(run['model_profile']))
             directory.mkdir(parents=True, exist_ok=True)
             print(f"Running {run['run_id']}", flush=True)
             started = perf_counter()
             with (directory / 'console.log').open('w', encoding='utf-8') as stream:
-                process = subprocess.run(run['command'], cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT)
+                process = subprocess.run(run['command'], cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, env=env)
             write_json(directory / 'process.json', {'exit_code': process.returncode,
                                                     'process_seconds': perf_counter() - started})
-        row = {**summarize_run(directory), **run, **read_json(directory / 'process.json')}
+        row = {**summarize_run(directory, run.get('step_limit')), **run, **read_json(directory / 'process.json')}
         row.pop('command')
+        row['episode_cost'] = episode_cost(row, row)
         rows.append(row)
         export_rows(output, rows)
     print(f"Saved {len(rows)} episodes to {output / 'episodes.csv'}")

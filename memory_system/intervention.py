@@ -60,15 +60,21 @@ class InterventionController:
     def __init__(self, output_dir, mode="suggest", strategy="verified", capacity=2,
                  request_budget=3, timeout=120, pause_mode="global", evidence_mode="compact",
                  clock=time.monotonic, revalidation="incremental", environment="crafter",
-                 search_agents=None):
+                 search_agents=None, selection="minimal"):
         """``capacity``: most agents one review may open. ``search_agents``: cap on the
-        automatic repair search (None searches the smallest sufficient scope, uncapped)."""
+        automatic repair search (None searches the smallest sufficient scope, uncapped).
+        ``selection``: ``minimal`` or the ``any`` ablation. ``revalidation``:
+        ``incremental``, ``full``, or the ``none`` ablation, which commits a reviewed
+        edit without rechecking the current state (the check still runs, only to log
+        whether it would have failed)."""
+        if revalidation not in ("incremental", "full", "none"):
+            raise ValueError("revalidation must be 'incremental', 'full' or 'none'")
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.review_dir = self.output_dir / "reviews"
         self.review_dir.mkdir(exist_ok=True)
         self.mode, self.strategy, self.capacity = mode, strategy, capacity
-        self.search_agents = search_agents
+        self.search_agents, self.selection = search_agents, selection
         self.request_budget, self.timeout = request_budget, timeout
         self.pause_mode, self.evidence_mode, self.clock = pause_mode, evidence_mode, clock
         self.revalidation = revalidation
@@ -123,7 +129,16 @@ class InterventionController:
                 source, request_id=None, already_verified=False):
         step = agents[0].step
         started = time.perf_counter()
-        if already_verified:
+        expected = {target.target_id for target in targets}
+        unchecked = self.revalidation == 'none' and source == 'human'
+        if unchecked:
+            # Ablation: commit the reviewed edit as is. The check below is only
+            # logged, so the table can count stale edits that went through.
+            shadow = self.adapter.verify(plans, observations, targets, edits, domains)
+            would_fail = shadow.status != "repairable" or not expected <= set(shadow.covered_targets)
+            self.validation_counts['unchecked'] += 1
+            self.validation_counts['unchecked_would_fail'] += int(would_fail)
+        elif already_verified:
             verification = self.pending['certificate']
             self.validation_counts['reused'] += 1
         elif self.revalidation == 'incremental':
@@ -133,12 +148,12 @@ class InterventionController:
         else:
             verification = self.adapter.verify(plans, observations, targets, edits, domains)
             self.validation_counts['full_checks'] += 1
-        self.validation_seconds += time.perf_counter() - started
-        expected = {target.target_id for target in targets}
-        if verification.status != "repairable" or not expected <= set(verification.covered_targets):
-            self.event("commit_rejected", step, request_id=request_id, source=source,
-                       reasons=verification.reasons, target_results=verification.target_results)
-            return False
+        if not unchecked:
+            self.validation_seconds += time.perf_counter() - started
+            if verification.status != "repairable" or not expected <= set(verification.covered_targets):
+                self.event("commit_rejected", step, request_id=request_id, source=source,
+                           reasons=verification.reasons, target_results=verification.target_results)
+                return False
         self.commit_count += 1
         commit_id = f"commit_{self.commit_count:04d}"
         by_id = {response["id"]: response for response in responses}
@@ -149,14 +164,23 @@ class InterventionController:
             response["thoughts"] = response["thoughts"] or agents[edit.agent_id].pending_plan_response
         self.commits.append({"commit_id": commit_id, "request_id": request_id,
                              "step": step, "source": source, "targets": targets})
+        original = {plan.agent_id: plan for plan in plans}
+        owners = {target.agent_id for target in targets}
+        # Helpers whose own non-idle plan the repair replaced.
+        interrupted = sorted({edit.agent_id for edit in edits if edit.agent_id not in owners
+                              and original[edit.agent_id].operation != "noop"
+                              and edit != original[edit.agent_id]})
         self.event("plan_applied", step, commit_id=commit_id, request_id=request_id, source=source,
                    edits=[asdict(edit) for edit in edits], targets=[asdict(target) for target in targets],
-                   certificate_unchanged=already_verified)
+                   edited_agents=sorted({edit.agent_id for edit in edits}), interrupted_agents=interrupted,
+                   certificate_unchanged=already_verified, unchecked=unchecked,
+                   **({"would_fail_check": would_fail} if unchecked else {}))
         return True
 
     def _auto(self, agents, observations, responses, plans, analysis=None):
         if analysis is None:
             analysis = self.adapter.generate(plans, observations, max_scope_agents=self.search_agents,
+                                                selection=self.selection,
                                                 editable_agents={agent.id for agent in agents if not getattr(agent, "is_human", False)})
         selected = analysis["selected"]
         if selected is None:
@@ -255,7 +279,9 @@ class InterventionController:
                 getattr(edit, field) == getattr(original[edit.agent_id], field)
                 for field in PLAN_FIELDS if field not in pending["allowed_fields"][edit.agent_id]
             ) for edit in edits)
-            versions_match = all(current[agent_id] == original[agent_id] for agent_id in pending["scope"])
+            # The 'none' ablation skips every check of the current state, including this one.
+            versions_match = self.revalidation == 'none' or all(
+                current[agent_id] == original[agent_id] for agent_id in pending["scope"])
             if permission and versions_match:
                 related = self.adapter.dependencies(plans, observations, edits, pending['targets'])
                 reusable = (self.revalidation == 'incremental' and not changes

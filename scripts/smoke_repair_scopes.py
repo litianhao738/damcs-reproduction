@@ -363,6 +363,25 @@ class RepairScopeChecks(unittest.TestCase):
         self.assertIsNone(report["selected"])
         self.assertIn("assignment budget", report["reason"])
 
+    def test_any_selection_ablation_picks_a_reproducible_verified_repair(self):
+        self.table(0)
+        self.table(1)
+        self.players[1].inventory["wood"] = 1
+        plans = [plan(0, "make_wood_pickaxe"), plan(1, "make_wood_pickaxe"), plan(2)]
+        minimal = generate_scope_candidates(plans, self.observations())
+        first = generate_scope_candidates(plans, self.observations(), selection="any")
+        second = generate_scope_candidates(plans, self.observations(), selection="any")
+        self.assertEqual(first["selected"], second["selected"])
+        self.assertEqual(first["selected"]["status"], "repairable")
+        # The ablation does not stop deepening once every target is covered.
+        self.assertEqual((minimal["search_stop"], first["search_stop"]), ("all_targets_covered", "scope_limit"))
+        self.assertEqual(first["selection"], "any")
+        self.assertGreaterEqual(len(first["selected"]["edited_agents"]), len(minimal["selected"]["edited_agents"]))
+        self.execute(plans, [Plan(**edit) for edit in first["selected"]["edits"]])
+        self.assertEqual(self.players[0].achievements["make_wood_pickaxe"], 1)
+        with self.assertRaises(ValueError):
+            generate_scope_candidates(plans, self.observations(), selection="largest")
+
     def test_unobserved_incoming_share_propagates_through_a_chain(self):
         self.table(2)
         plans = [plan(0, "share", item="wood", recipient=1),

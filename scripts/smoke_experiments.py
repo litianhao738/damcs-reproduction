@@ -39,6 +39,64 @@ class ExperimentChecks(unittest.TestCase):
         self.assertEqual({(cmd[cmd.index('--pause_mode') + 1], cmd[cmd.index('--revalidation') + 1]) for cmd in commands},
                          {('global', 'full'), ('none', 'full'), ('local', 'incremental')})
 
+    def test_ablation_suite_changes_one_component_per_row(self):
+        args = get_parser().parse_args(['--suite', 'ablation', '--seeds', '4', '--results_dir', self.output.name])
+        rows = {row['variant']: row['command'] for row in build_matrix(args)}
+        self.assertEqual(len(rows), 7)
+
+        def flag(command, name):
+            return command[command.index(name) + 1]
+
+        no_replan = rows['C-no-replan']
+        self.assertEqual((flag(no_replan, '--condition'), flag(no_replan, '--repair_rounds'),
+                          flag(no_replan, '--scope_mode')), ('custom', '0', 'auto'))
+        self.assertEqual(flag(rows['C-any-scope'], '--scope_selection'), 'any')
+        base = rows['H2script']
+        self.assertEqual((flag(base, '--reviewer'), flag(base, '--pause_mode'), flag(base, '--revalidation'),
+                          flag(base, '--evidence_mode')), ('scripted', 'local', 'incremental', 'compact'))
+        changed = {'H2script-global-wait': ('--pause_mode', 'global'), 'H2script-no-wait': ('--pause_mode', 'none'),
+                   'H2script-full-recheck': ('--revalidation', 'full'),
+                   'H2script-no-recheck': ('--revalidation', 'none')}
+        for variant, (name, value) in changed.items():
+            with self.subTest(variant=variant):
+                command = rows[variant]
+                self.assertEqual(flag(command, name), value)
+                differing = [option for option in ('--pause_mode', '--revalidation', '--evidence_mode',
+                                                   '--reviewer', '--scope_selection', '--condition')
+                             if flag(command, option) != flag(base, option)]
+                self.assertEqual(differing, [name])
+
+    def test_model_profiles_repeat_the_matrix_and_record_prices(self):
+        args = get_parser().parse_args(['--conditions', 'A', 'B', 'C', '--seeds', '4',
+                                        '--model_profiles', 'qwen', 'deepseek', '--results_dir', self.output.name])
+        rows = build_matrix(args)
+        self.assertEqual(len(rows), 6)
+        self.assertEqual({row['model_profile'] for row in rows}, {'qwen', 'deepseek'})
+        self.assertTrue(all(row['run_id'].startswith(row['model_profile'] + '_') for row in rows))
+        self.assertTrue(all('input_price_per_million_tokens' in row for row in rows))
+        self.assertTrue(all('KEY' not in json.dumps(row['command']) for row in rows))
+
+    def test_crafter_milestones_cost_and_repair_counts_are_summarized(self):
+        (self.directory / 'all_rounds_stats.csv').write_text(
+            'Collect wood,Place table,Make wood pickaxe,Collect stone,Make stone pickaxe,Collect iron,'
+            'Collect coal,Place furnace,Make iron pickaxe,Collect diamond\n'
+            '2.0,7.0,8.0,17.0,26.0,70.0,122.0,129.0,,\n', encoding='utf-8')
+        events = [
+            {'event': 'plan_applied', 'edits': [], 'edited_agents': [1, 2], 'interrupted_agents': [2]},
+            {'event': 'plan_applied', 'edits': [], 'edited_agents': [3], 'interrupted_agents': []},
+            {'event': 'review_skipped', 'reason': 'over_review_capacity'},
+            {'event': 'review_resolved', 'status': 'stale_plan'},
+        ]
+        (self.directory / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)) + '\n', encoding='utf-8')
+        row = summarize_run(self.directory, step_limit=350)
+        self.assertEqual((row['milestones_reached'], row['step_place_furnace']), (8, 129.0))
+        self.assertIsNone(row['diamond_step'])
+        self.assertTrue(row['diamond_censored'])
+        self.assertEqual(row['diamond_step_or_limit'], 350)
+        self.assertEqual((row['mean_edited_agents'], row['interrupted_plans'], row['over_review_capacity']),
+                         (1.5, 1, 1))
+        self.assertEqual((row['reply_stale_plan'], row['invalid_replies']), (1, 1))
+
     def test_condition_presets_and_config_capture_source_without_credentials(self):
         args = get_arg_parser().parse_args(['--condition', 'H2'])
         apply_condition(args)

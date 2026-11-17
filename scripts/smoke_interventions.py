@@ -132,6 +132,41 @@ class InterventionChecks(unittest.TestCase):
         self.assertIsNone(controller.pending)
         self.assertEqual(self.agents[1].op, 'share')
 
+    def events(self):
+        return [json.loads(line) for line in (self.output / 'events.jsonl').read_text().splitlines()]
+
+    def test_applied_repair_logs_edited_and_interrupted_helpers(self):
+        controller = self.controller(mode='auto')
+        self.prepare(controller)
+        applied = next(event for event in self.events() if event['event'] == 'plan_applied')
+        # Agent 1 was making its own pickaxe; the repair replaced that with a share.
+        self.assertEqual((applied['edited_agents'], applied['interrupted_agents']), ([1], [1]))
+
+    def stale_reply(self, revalidation):
+        controller = self.controller(mode='human', revalidation=revalidation)
+        self.prepare(controller)
+        # The provider loses its wood while the review is pending.
+        self.fixture.players[1].inventory['wood'] = 0
+        self.obs = self.fixture.observations()
+        self.respond(controller)
+        return controller, next(event for event in self.events() if event['event'] == 'review_resolved')
+
+    def test_recheck_rejects_a_stale_reviewed_edit(self):
+        controller, resolved = self.stale_reply('incremental')
+        self.assertEqual(resolved['status'], 'invalid')
+        self.assertNotIn('unchecked', controller.validation_counts)
+
+    def test_no_recheck_ablation_commits_the_stale_edit_and_counts_it(self):
+        controller, resolved = self.stale_reply('none')
+        self.assertEqual(resolved['status'], 'accepted')
+        self.assertEqual(controller.validation_counts['unchecked'], 1)
+        self.assertEqual(controller.validation_counts['unchecked_would_fail'], 1)
+        applied = next(event for event in self.events() if event['event'] == 'plan_applied')
+        self.assertTrue(applied['unchecked'] and applied['would_fail_check'])
+        self.assertEqual(self.agents[1].op, 'share')
+        with self.assertRaises(ValueError):
+            self.controller(revalidation='never')
+
     def test_repair_larger_than_review_capacity_skips_review_and_uses_auto(self):
         self.plans = self.fixture.three_provider_iron_pickaxe()
         self.agents = self.fixture.agents(self.plans)

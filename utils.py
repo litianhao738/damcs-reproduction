@@ -321,7 +321,8 @@ class AgentThinkingProcessor:
     def process_agent_thinking_parallel(
             agents, agents_contexts, info, coordination_mode="repair",
             max_repair_rounds=2, coordination_log=None,
-            scope_mode="suggest", scope_max_agents=None, intervention=None, execution_guard=None):
+            scope_mode="suggest", scope_max_agents=None, intervention=None, execution_guard=None,
+            scope_selection="minimal"):
         """Run all AI agents' AgentScope replies concurrently, but skip HumanAgents"""
         agents_responses = []
         
@@ -374,6 +375,7 @@ class AgentThinkingProcessor:
                     [Plan(**plan) for plan in history[-1]["plans"]], observations,
                     max_scope_agents=scope_max_agents,
                     editable_agents={agent.id for agent in ai_agents},
+                    selection=scope_selection,
                 )
                 for response in agents_responses:
                     response["scope_suggestion"] = scope_analysis["selected"]
@@ -625,6 +627,11 @@ def get_arg_parser():
                              'deepens by agent count and keeps the smallest scope that covers the most targets.')
     parser.add_argument('--review_max_agents', type=positive_int, default=2,
                         help='Most agents one human review may open; larger repairs skip review (default: 2).')
+    parser.add_argument('--scope_selection', choices=['minimal', 'any'], default='minimal',
+                        help="How a repair is chosen: 'minimal' covers the most targets with the fewest "
+                             "agents; 'any' is the ablation that picks any verified repair (default: minimal).")
+    parser.add_argument('--reviewer_id', default='',
+                        help='Who reviewed this episode; recorded in config.json for the human study.')
     parser.add_argument('--condition', choices=['custom', 'A', 'B', 'C', 'H0', 'H1', 'H2'], default='custom')
     parser.add_argument('--seed', type=int, default=4)
     parser.add_argument('--repeat_id', type=int, default=0)
@@ -632,7 +639,8 @@ def get_arg_parser():
     parser.add_argument('--review_strategy', choices=['verified', 'owner', 'related'], default='verified')
     parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='global')
     parser.add_argument('--evidence_mode', choices=['compact', 'full'], default='compact')
-    parser.add_argument('--revalidation', choices=['incremental', 'full'], default='incremental')
+    parser.add_argument('--revalidation', choices=['incremental', 'full', 'none'], default='incremental',
+                        help="Check before committing a reviewed edit; 'none' is the ablation that skips it.")
     parser.add_argument('--review_timeout', type=float, default=120)
     parser.add_argument('--review_step_seconds', type=float, default=1)
     parser.add_argument('--review_port', type=int, default=8765)

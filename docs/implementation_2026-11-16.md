@@ -82,7 +82,7 @@ python run.py --condition H2 --agent_num 6 --step_num 350 --human_requests 3 --r
 
 ## 4. 对比与消融入口
 
-正式要跑的三张表（主实验、部件消融、跨模型对比）及其统一设置、指标和运行前待办，见 [实验表设计](experiment_tables_2026-11-17.md)。主环境为 MA-Crafter，CUBE 只用于表 1 的 B、C、H2。
+正式要跑的三张表（主实验、部件消融、跨模型对比）及其统一设置、指标和运行前待办，见 [实验表设计](experiment_tables_2026-11-17.md)。主环境为 MA-Crafter，CUBE 只用于表 1 的 B、C、H2。2026-11-17 起补齐了运行三张表所需的部分：任意 OpenAI 兼容接口与命名模型配置（`config/model_profiles.json`、`scripts/run_with_model.py`）、独立的 Embedding 配置、表 2 的消融套件（`--suite ablation`，含 `--scope_selection any` 与 `--revalidation none`）以及钻石步数、改动人数和费用等汇总字段。
 
 | 条件 | 最终行为 |
 | --- | --- |

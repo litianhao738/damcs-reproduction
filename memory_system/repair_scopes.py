@@ -5,7 +5,9 @@ player action pass (shares first), not later autonomous-object/life dynamics.
 """
 
 from dataclasses import asdict, dataclass, replace
+import hashlib
 from itertools import combinations, product
+import json
 from math import prod
 from time import perf_counter
 
@@ -481,6 +483,26 @@ class ScopeSearch:
                 "search_stop": self.stop}
 
 
+SCOPE_SELECTIONS = ("minimal", "any")
+
+
+def select_any_repair(candidates, targets):
+    """Ablation: one verified witness chosen without preferring coverage or size.
+
+    The choice is a hash of the state, so the same snapshot always gives the
+    same pick and runs stay reproducible.
+    """
+    ordered = sorted((candidate for candidate in candidates if candidate.status == "repairable"
+                      and candidate.changed_fields),
+                     key=lambda candidate: tuple(_plan_key(plan) for plan in candidate.edits))
+    if not ordered:
+        return None
+    state = {"targets": sorted(target.target_id for target in targets),
+             "witnesses": [[_plan_key(plan) for plan in candidate.edits] for candidate in ordered]}
+    digest = hashlib.sha256(json.dumps(state, sort_keys=True, default=str).encode()).digest()
+    return ordered[int.from_bytes(digest[:8], "big") % len(ordered)]
+
+
 def select_repair_scope(candidates, targets, max_scope_agents=None):
     priorities = {target.target_id: target.immediate for target in targets}
 
@@ -498,8 +520,14 @@ def select_repair_scope(candidates, targets, max_scope_agents=None):
 
 
 def generate_scope_candidates(plans, observations, checks=None, max_scope_agents=None,
-                              editable_agents=None):
-    """Enumerate exact changed sets by increasing size, then summarize allowed supersets."""
+                              editable_agents=None, selection="minimal"):
+    """Enumerate exact changed sets by increasing size, then summarize allowed supersets.
+
+    ``selection="any"`` is the ablation: search every allowed scope (within the
+    budget) and pick any verified witness instead of the fullest, smallest one.
+    """
+    if selection not in SCOPE_SELECTIONS:
+        raise ValueError(f"selection must be one of {SCOPE_SELECTIONS}")
     started = perf_counter()
     checks = diagnose(plans, observations) if checks is None else checks
     targets = build_repair_targets(plans, observations, checks)
@@ -512,7 +540,8 @@ def generate_scope_candidates(plans, observations, checks=None, max_scope_agents
     all_targets = {target.target_id for target in targets}
 
     def covered_all():
-        return any(set(result.covered_targets) >= all_targets for result in witnesses.values())
+        return selection == "minimal" and any(
+            set(result.covered_targets) >= all_targets for result in witnesses.values())
 
     for level in search.levels(covered_all) if targets else []:
         for scope in level:
@@ -543,7 +572,8 @@ def generate_scope_candidates(plans, observations, checks=None, max_scope_agents
                   for key in ("repairable", "unknown", "infeasible")}
         status = "repairable" if counts["repairable"] else "unknown" if counts["unknown"] else "infeasible"
         summaries.append({"agents": scope, "status": status, "assignments": sum(counts.values())})
-    selected = select_repair_scope(minimal, targets, max_scope_agents)
+    selected = select_repair_scope(minimal, targets, max_scope_agents) if selection == "minimal" \
+        else select_any_repair(candidates, targets)
     if not targets:
         status, reason = "no_targets", "No outstanding inventory/tool goal is covered by the one-step model."
     elif selected is not None:
@@ -558,7 +588,7 @@ def generate_scope_candidates(plans, observations, checks=None, max_scope_agents
         reason += " Larger scopes were not searched: assignment budget reached."
     return {
         "status": status, "reason": reason,
-        "horizon": 1, **search.report(),
+        "horizon": 1, **search.report(), "selection": selection,
         "model": "submitted-state player action pass; shares before primitives",
         "targets": [asdict(target) for target in targets],
         "domains": {agent_id: [asdict(plan) for plan in domain] for agent_id, domain in domains.items()},

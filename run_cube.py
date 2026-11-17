@@ -67,7 +67,8 @@ class CubeSimulation:
                         new = {plan.agent_id: plan for plan in revised}
                         plans = [new.get(plan.agent_id, plan) for plan in plans]
                     analysis = self.adapter.generate(plans, observations,
-                                                     max_scope_agents=self.controller.search_agents) \
+                                                     max_scope_agents=self.controller.search_agents,
+                                                     selection=self.controller.selection) \
                         if self.controller.mode in ('auto', 'human', 'suggest') else None
                 else:
                     analysis = None
@@ -111,7 +112,7 @@ def main():
     output = Path(args.results_dir)
     controller = InterventionController(
         output, mode=args.scope_mode, strategy=args.review_strategy, capacity=args.review_max_agents,
-        search_agents=args.scope_max_agents,
+        search_agents=args.scope_max_agents, selection=args.scope_selection,
         request_budget=args.human_requests, timeout=args.review_timeout, pause_mode=args.pause_mode,
         evidence_mode=args.evidence_mode, revalidation=args.revalidation, environment='cube',
     )
