@@ -58,6 +58,7 @@ ABLATIONS = [
 # can still measure it offline when replanning leaves legality problems unsolved.
 APPENDIX = [
     ('C-no-commit', 'C', {'progress_commit': 'off'}),
+    ('C-no-prestage', 'C', {'progress_prestage': 'off'}),
     ('Hscript', 'H', {'reviewer': 'scripted'}),
     ('Hscript-progress-pause', 'H', {'reviewer': 'scripted', 'progress_pause': 'on'}),
     ('Hscript-no-recheck', 'H', {'reviewer': 'scripted', 'revalidation': 'none'}),
@@ -72,7 +73,7 @@ def variants(args):
     base = {'scope_max_agents': args.scope_max_agents, 'evidence_mode': args.evidence_mode,
             'pause_mode': args.pause_mode, 'revalidation': args.revalidation,
             'scope_selection': 'minimal', 'reviewer': args.reviewer, 'progress_commit': 'on',
-            'progress_pause': 'off', 'team_board': 'auto',
+            'progress_pause': 'off', 'team_board': 'auto', 'progress_prestage': 'on',
             'agent_llm': 'on'}
     if args.suite in ('ablation', 'appendix'):
         rows = ABLATIONS if args.suite == 'ablation' else APPENDIX
@@ -103,6 +104,7 @@ def build_matrix(args):
                          + (['nocommit'] if s['progress_commit'] == 'off' else [])
                          + (['progpause'] if s['progress_pause'] == 'on' else [])
                          + (['noboard'] if s['team_board'] == 'off' else [])
+                         + (['noprestage'] if s['progress_prestage'] == 'off' else [])
                          + (['nollm'] if s['agent_llm'] == 'off' else []))
         directory = Path(args.results_dir).resolve() / label
         command = [sys.executable, '-B', str(ROOT / ('run_cube.py' if args.environment == 'cube' else 'run.py')),
@@ -117,7 +119,7 @@ def build_matrix(args):
                    '--evidence_mode', s['evidence_mode'], '--pause_mode', s['pause_mode'],
                    '--revalidation', s['revalidation'], '--scope_selection', s['scope_selection'],
                    '--progress_commit', s['progress_commit'], '--progress_pause', s['progress_pause'],
-                   '--team_board', s['team_board'],
+                   '--team_board', s['team_board'], '--progress_prestage', s['progress_prestage'],
                    '--agent_llm', s['agent_llm'],
                    *(['--slow_margin', str(args.slow_margin)] if args.slow_margin is not None else []),
                    '--reviewer', s['reviewer'], '--reviewer_id', args.reviewer_id,
@@ -143,7 +145,7 @@ def build_matrix(args):
                'review_cooldown': args.review_cooldown, 'stall_steps': args.stall_steps,
                'stall_fraction': args.stall_fraction, 'step_limit': args.step_num,
                'progress_commit': s['progress_commit'], 'progress_pause': s['progress_pause'],
-               'team_board': s['team_board'],
+               'team_board': s['team_board'], 'progress_prestage': s['progress_prestage'],
                'agent_llm': s['agent_llm'],
                'slow_margin_arg': args.slow_margin}
         if profile:
@@ -258,7 +260,8 @@ def summarize_run(directory, step_limit=None):
     row['requests_legal'] = sum(review.get('kind', 'legal') == 'legal' for review in reviews)
     row['requests_progress'] = sum(review.get('kind') == 'progress' for review in reviews)
     row.update({key: summary.get(key) for key in (
-        'progress_mode', 'progress_commit', 'progress_pause', 'slow_margin', 'progress_target_steps',
+        'progress_mode', 'progress_commit', 'progress_pause', 'progress_prestage', 'progress_prestaged',
+        'slow_margin', 'progress_target_steps',
         'progress_commits',
         'progress_exact_commits', 'progress_exact_success', 'progress_tasks', 'progress_tasks_completed',
         'stall_steps_total', 'committed_agent_steps', 'progress_seconds')})
@@ -266,6 +269,7 @@ def summarize_run(directory, step_limit=None):
                           ('progress_commits_by_template', 'progress_commits_'),
                           ('progress_commits_by_source', 'progress_source_'),
                           ('progress_task_releases', 'progress_release_'),
+                          ('progress_prestage_releases', 'progress_prestage_release_'),
                           ('progress_replies', 'progress_reply_')):
         row.update({prefix + key: value for key, value in (summary.get(field) or {}).items()})
     errors = summary.get('progress_estimate_errors') or []

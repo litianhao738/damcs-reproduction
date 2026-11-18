@@ -81,6 +81,11 @@ class CubeAdapter:
             stalled, skip, only, force)
 
     @staticmethod
+    def prestage_analysis(plans, observations, goals, free_agents, slow_margin, skip=()):
+        """CUBE has no tools to wait for: nobody is sent ahead."""
+        return []
+
+    @staticmethod
     def apply_plan(agent, plan):
         agent.op = plan.operation
 

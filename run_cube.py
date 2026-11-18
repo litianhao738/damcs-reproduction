@@ -138,6 +138,7 @@ def main():
         evidence_mode=args.evidence_mode, revalidation=args.revalidation, environment='cube',
         progress_mode=args.progress_mode, progress_commit=args.progress_commit == 'on',
         slow_margin=args.slow_margin, progress_pause=args.progress_pause == 'on',
+        progress_prestage=args.progress_prestage == 'on',
     )
     write_json(output / 'config.json', experiment_config(args, 'cube'))
     env = CoopBlockPush(grid_size=args.grid_size, num_agents=args.agent_num,

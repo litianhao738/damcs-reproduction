@@ -660,6 +660,9 @@ def get_arg_parser():
                         help="Crafter: show every agent the shared team board (each agent's own status and "
                              "the team's progress). 'auto' (default) turns it on with progress repair "
                              "(conditions C and H) and off otherwise.")
+    parser.add_argument('--progress_prestage', choices=['on', 'off'], default='on',
+                        help="With progress repair: send a free agent ahead to a far material whose tool is "
+                             "about to be made (default: on); 'off' is the ablation.")
     parser.add_argument('--progress_pause', choices=['off', 'on'], default='off',
                         help="'off': nobody waits during a progress review, and the chosen option is "
                              "rechecked when the reply arrives (default); 'on' is the ablation that holds "

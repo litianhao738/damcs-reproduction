@@ -27,6 +27,7 @@ from memory_system.progress_repair import CrafterProgress, frontier
 from memory_system.repair_scopes import generate_scope_candidates
 from memory_system.review_domains import CrafterAdapter
 from memory_system.review_server import ReviewServer
+from memory_system.team_board import TeamBoard
 from third_party.coop2_cube.env.env import Block, CoopBlockPush
 from utils import AgentActionProcessor, AgentThinkingProcessor
 
@@ -199,6 +200,82 @@ class CrafterProgressChecks(unittest.TestCase):
         self.assertEqual(controller.tasks, {})
         self.assertFalse(any('plan_override' in reply for reply in replies))
         self.assertIn('collect 1 tree', self.agents[0].intervention_notes[-1])
+
+    def iron_scene(self, iron=(12, 22)):
+        """Stone is the next stage; the only iron lies far below Agent 1 (14 steps to face it)."""
+        self.reach('collect_wood', 'place_table', 'make_wood_pickaxe')
+        self.fixture.world[iron] = 'iron'
+        self.plans = [plan(0, 'Navigator', 'stone'), plan(1), plan(2)]
+        self.goals = {0: 'collect_stone', 1: 'share', 2: 'share'}
+        self.agents = self.fixture.agents(self.plans)
+        self.obs = self.fixture.observations()
+
+    def test_prestage_sends_a_free_agent_ahead_and_ends_when_the_tool_exists(self):
+        self.iron_scene()
+        controller = self.controller(mode='auto', progress_mode='auto')
+        self.plan_step(controller)
+        # Agent 0 works on the frontier (stone); Agent 1 is free and nearest to the iron.
+        self.assertEqual(set(controller.tasks), {1})
+        task = controller.tasks[1]
+        self.assertEqual((task['prestage'], task['milestone'], task['macros'], task['estimate']),
+                         ('collect_iron', 'make_stone_pickaxe', [['approach', 'iron']], 14))
+        self.assertEqual((Plan.from_agent(self.agents[1]).operation, Plan.from_agent(self.agents[1]).material),
+                         ('Navigator', 'iron'))
+        self.assertTrue(any('wait there' in note for note in self.agents[1].intervention_notes))
+        board = TeamBoard(controller).render(self.agents, self.obs, step=0)[0]
+        self.assertIn('team task: wait near iron for collect_iron', board)
+        start = int(self.players[1].pos[1])
+        for _ in range(3):
+            self.transition(controller)
+            controller.prepare(self.agents, self.obs)
+        self.assertGreater(int(self.players[1].pos[1]), start)
+        # The stone pickaxe is made: the walk ends, ready for the hand-over.
+        self.reach('collect_stone', 'make_stone_pickaxe')
+        self.transition(controller)
+        self.assertEqual(controller.tasks, {})
+        self.assertEqual(dict(controller.prestage_releases), {'milestone_reached': 1})
+        summary = controller.finish(list(self.obs.values()), 4, 'step_limit')
+        self.assertEqual((summary['progress_prestaged'], summary['progress_tasks_completed']), (1, 0))
+        self.assertEqual(next(event for event in self.events() if event['event'] == 'progress_prestaged')
+                         ['milestone'], 'collect_iron')
+
+    def test_prestage_leaves_alone_the_agents_a_waiting_problem_needs(self):
+        # Coal takes Agents 0 and 1; iron's best option also needs Agent 1, so iron waits a step.
+        # Agent 2, which that iron option would use, must not be sent ahead elsewhere meanwhile.
+        self.iron_scene()
+        controller = self.controller(mode='auto', progress_mode='auto')
+        problems = [{'milestone': 'collect_coal', 'type': 'slow', 'now_estimate': None, 'now_agents': [],
+                     'options': [{'option_id': 'coal', 'agents': [0, 1], 'estimate': 3, 'exact': False,
+                                  'saves': None}]},
+                    {'milestone': 'collect_iron', 'type': 'slow', 'now_estimate': None, 'now_agents': [],
+                     'options': [{'option_id': 'iron', 'agents': [1, 2], 'estimate': 9, 'exact': False,
+                                  'saves': None}]}]
+        offered = {}
+
+        def prestage_analysis(plans, observations, goals, free_agents, slow_margin, skip=()):
+            offered['free'] = set(free_agents)
+            return []
+
+        with patch.object(controller.adapter, 'progress_analysis', return_value={'problems': problems}), \
+                patch.object(controller.adapter, 'prestage_analysis', side_effect=prestage_analysis), \
+                patch.object(controller, '_apply_progress') as applied:
+            self.plan_step(controller)
+        self.assertEqual([call.args[4]['option_id'] for call in applied.call_args_list], ['coal'])
+        self.assertEqual(offered['free'], set())
+
+    def test_prestage_skips_near_materials_logging_conditions_and_the_ablation(self):
+        cases = {
+            'iron already near an agent': ({'mode': 'auto', 'progress_mode': 'auto'}, (16, 10)),
+            'progress only recorded (B)': ({'mode': 'auto', 'progress_mode': 'log'}, (12, 22)),
+            'switched off': ({'mode': 'auto', 'progress_mode': 'auto', 'progress_prestage': False}, (12, 22)),
+        }
+        for name, (settings, iron) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                self.iron_scene(iron)
+                controller = self.controller(**settings)
+                self.plan_step(controller)
+                self.assertEqual(controller.tasks, {})
 
     def respond(self, controller, **payload):
         write_json(controller.review_dir / f"{controller.pending['id']}.response.json",

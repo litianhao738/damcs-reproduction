@@ -318,7 +318,7 @@ def main():
                 timeout=args.review_timeout, pause_mode=args.pause_mode, evidence_mode=args.evidence_mode,
                 revalidation=args.revalidation, progress_mode=args.progress_mode,
                 progress_commit=args.progress_commit == 'on', slow_margin=args.slow_margin,
-                progress_pause=args.progress_pause == 'on',
+                progress_pause=args.progress_pause == 'on', progress_prestage=args.progress_prestage == 'on',
             )
             write_json(round_dir / 'config.json', config)
         review_server = ReviewServer(intervention.review_dir, args.review_port) \

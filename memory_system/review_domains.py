@@ -62,6 +62,11 @@ class CrafterAdapter:
             stalled, skip, only, force)
 
     @staticmethod
+    def prestage_analysis(plans, observations, goals, free_agents, slow_margin, skip=()):
+        """Agents to send ahead to a far material whose tool is about to be made."""
+        return CrafterProgress(plans, observations, goals, free_agents, slow_margin).prestage(skip)
+
+    @staticmethod
     def apply_plan(agent, plan):
         from .agent import ActionStatus  # imported here: the agent module loads the vision stack
         agent.update_current_skill(plan.operation, plan.material, plan.item, plan.recipient)

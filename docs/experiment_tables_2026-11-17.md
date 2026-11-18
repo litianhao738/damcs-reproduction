@@ -6,7 +6,7 @@
 >
 > - **A**：DAMCS 底座。
 > - **B**：A + 合法性修复。最多 2 轮重规划；重规划后仍不合法时，由可修复范围 S 兜底。
-> - **C**：B + 自动处理"合法但慢"的计划（进度问题）+ 共享看板。
+> - **C**：B + 自动处理"合法但慢"的计划（进度问题，含提前派人）+ 共享看板。
 > - **H**：C 的人审版，主方法。
 >
 > 框架共 4 个模块：合法性修复、进度修复、共享看板、关键时刻人审。S 是合法性修复内部的兜底，不单独算模块。
@@ -15,6 +15,8 @@
 >
 > - **状态板**：每个智能体报告自己的关键物品、当前目标和计划、位置、低生命值等状态，以及自己视野里看到的资源和怪物；
 > - **进度账本**：全队已完成的里程碑、下一个里程碑和谁在做、多少步没有新进展。
+>
+> **提前派人（2026-11-19 加入进度修复）**：一个采集里程碑只差一件快要做好的工具，而材料又很远时（例如石镐做好前的铁），提前派一个空闲的智能体走过去等着；工具一做好，就远程送过去。离线检查（LLM 关闭，种子 4）中，钻石从第 100 步提前到第 61 步。详见实现说明第 4.1 节第 6 点。
 >
 > 看板只广播各智能体自己知道的信息，不含整张地图，也不下命令。DAMCS 底座里每个智能体只能看到上一个编号智能体的目标（链式通信），看板把这些信息改成全队可见。实现见 [实现说明](implementation_2026-11-16.md) 第 4.2 节。
 >
@@ -198,14 +200,15 @@ Crafter 的主要指标是"采到钻石用了多少步"，不是成功率。已�
 | 设计选择 | 替换为 | 指标 | 原设计 | 替换后 |
 | --- | --- | --- | --- | --- |
 | 锁定执行 | 只写进提示 | 多步完成率 ↑ | | |
+| 提前派人 | 工具做好后才出发 | 钻石步数 ↓ | | |
 | 进度审阅时不暂停 | 暂停方案涉及的 Agent | 被暂停的 Agent 步数 ↓、钻石步数 ↓ | | |
 | 提交前复核 | 不复核 | 过期修复被提交数 ↓ | | |
 | 精简证据 | 完整证据 | 展示的事实组数 ↓ | | |
 
 表注：
 
-- **在线三组（可选）：** 用 `--suite appendix` 运行 `C-no-commit`、`Hscript`、`Hscript-progress-pause`、`Hscript-no-recheck`，共 24 局，都不需要真人。
-  - 锁定执行与 C 比；暂停和复核与 `Hscript` 比。
+- **在线四组（可选）：** 用 `--suite appendix` 运行 `C-no-commit`、`C-no-prestage`、`Hscript`、`Hscript-progress-pause`、`Hscript-no-recheck`，共 30 局，都不需要真人。
+  - 锁定执行、提前派人与 C 比；暂停和复核与 `Hscript` 比。
   - `Hscript-progress-pause` 在进度审阅期间暂停方案涉及的 Agent（`--progress_pause on`，局部等待），即 2026-11-19 之前的做法。脚本审阅只延迟 2 步，所以这一行只反映"暂停"本身的代价；真人回复慢得多，实际代价更大（见上面统一设置里的预试数字）。
   - `Hscript` 是用脚本审阅（固定延迟 2 步、总是采纳推荐）的 H，测的是机制本身，不是人的价值。
 - **精简证据（离线）：** 读 `Hscript` 各局记录的 `evidence_groups_before` 和 `evidence_groups_after`。
@@ -289,7 +292,7 @@ python scripts\run_experiments.py --model_profiles qwen --conditions H --seeds 4
 # 表 2：C-no-legality、C-no-board、C-no-llm（C-no-llm 不调用任何模型）
 python scripts\run_experiments.py --suite ablation --model_profiles qwen --seeds 4 5 6 --repeats 2 --results_dir results\table2
 
-# 附表的在线三组（可选）：C-no-commit、Hscript、Hscript-progress-pause、Hscript-no-recheck
+# 附表的在线四组（可选）：C-no-commit、C-no-prestage、Hscript、Hscript-progress-pause、Hscript-no-recheck
 python scripts\run_experiments.py --suite appendix --model_profiles qwen --seeds 4 5 6 --repeats 2 --reviewer scripted --results_dir results\appendix
 
 # S 的补充统计（可选，只在重规划后仍有不合法问题时有内容）：读取表 1 自动条件运行中保存的问题快照

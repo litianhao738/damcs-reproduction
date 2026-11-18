@@ -99,7 +99,13 @@ class TeamBoard:
             parts.append(f"goal: {goal}")
         task = tasks.get(agent.id)
         plan = describe_plan(Plan.from_agent(agent))
-        parts.append(f"team task for {task['milestone']}: {plan}" if task else f"plan: {plan}")
+        if task and task.get("prestage"):
+            parts.append(f"team task: wait near {task['macros'][0][1]} for {task['prestage']} "
+                         f"(until {task['milestone']} is done): {plan}")
+        elif task:
+            parts.append(f"team task for {task['milestone']}: {plan}")
+        else:
+            parts.append(f"plan: {plan}")
         held = [f"{name} {inventory[name]}" for name in ITEMS if inventory.get(name, 0) > 0]
         parts.append("has " + (", ".join(held) if held else "nothing useful"))
         seen = seen_nearby(observation)
@@ -117,7 +123,8 @@ class TeamBoard:
             related = related_goals(milestone)
             workers = sorted(agent_id for agent_id in goals
                              if goals[agent_id] in related
-                             or (tasks.get(agent_id) or {}).get("milestone") == milestone)
+                             or ((tasks.get(agent_id) or {}).get("milestone") == milestone
+                                 and not tasks[agent_id].get("prestage")))
             upcoming.append(f"{milestone} ({'agents ' + ', '.join(map(str, workers)) if workers else 'nobody'})")
         if upcoming:
             lines.append("Next: " + "; ".join(upcoming) + ".")

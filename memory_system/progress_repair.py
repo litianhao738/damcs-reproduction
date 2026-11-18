@@ -478,6 +478,53 @@ class CrafterProgress:
                 problems.append({**base, "type": "unknown", "options": []})
         return {"frontier": steps, "now": now_by_milestone, "problems": problems, "slow_margin": self.margin}
 
+    def prestage(self, skip=()):
+        """Free agents to send ahead to a far material whose tool is about to be made.
+
+        A collect milestone qualifies when its only missing earlier stage is making the
+        tool it needs, and that tool is at most one stage from being makeable: iron while
+        stone is being collected for the stone pickaxe, the diamond while the iron
+        pickaxe's materials are being gathered. Shares ignore distance, so the tool can be
+        handed over the moment it exists; walking there first saves the walk after it.
+
+        One agent per material, chosen among free agents not working on a frontier
+        milestone, nearest first. Nobody is sent when the walk is shorter than
+        ``slow_margin``, when an agent is already that close, or when an agent is heading
+        there (its goal is the milestone, or it is navigating to the material).
+        ``skip``: milestones already being prepared.
+        """
+        done = achieved_milestones(self.observations)
+        front = frontier(self.observations)
+        busy = {agent_id for agent_id, goal in self.goals.items()
+                if any(goal in related_goals(milestone) for milestone in front)}
+        proposals, used = [], set()
+        for milestone in MILESTONE_ORDER:
+            kind, material, earlier = CRAFTER_MILESTONES[milestone]
+            missing = [stage for stage in earlier if stage not in done]
+            if kind != "collect" or milestone in done or milestone in skip or len(missing) != 1:
+                continue
+            tool = missing[0]
+            if CRAFTER_MILESTONES[tool][0] != "make" or not all(
+                    stage in done or stage in front for stage in CRAFTER_MILESTONES[tool][2]):
+                continue
+            walk = {agent_id: self.board.face_steps(self._position(agent_id), self._facing(agent_id), material)[0]
+                    for agent_id in self.observations if self._active(agent_id)}
+            heading = any(self.goals.get(agent_id) == milestone
+                          or (plan.operation == "Navigator" and plan.material == material)
+                          for agent_id, plan in self.plans.items())
+            if heading or any(steps < self.margin for steps in walk.values()):
+                continue
+            candidates = [agent_id for agent_id in sorted(self.free - busy - used) if walk.get(agent_id, INF) < INF]
+            if not candidates:
+                continue
+            agent_id = min(candidates, key=lambda candidate: (walk[candidate], candidate))
+            proposals.append({
+                "option_id": f"prestage|{milestone}|by{agent_id}", "milestone": milestone, "after": tool,
+                "material": material, "agent": agent_id, "estimate": int(walk[agent_id]),
+                "tasks": {str(agent_id): [["approach", material]]}})
+            used.add(agent_id)
+        return proposals
+
 
 def _plan(agent_id, operation, material=NA, item=NA, recipient=-1):
     return Plan(agent_id, operation, material, item, recipient)
@@ -491,7 +538,10 @@ def crafter_task_step(task, observation, board, done, incoming, step):
     - ``["share", item, recipient, count]``: hand over ``count`` units, one per step;
     - ``["collect", material, count]``: walk to the material and collect ``count`` units;
     - ``["make", tool]``: walk next to the facility and make the tool once the materials are in hand;
-    - ``["place", facility]``: place the facility in front (skipped when one is already nearby).
+    - ``["place", facility]``: place the facility in front (skipped when one is already nearby);
+    - ``["approach", material]``: walk until facing the material, then wait there. Used to
+      send an agent ahead (``CrafterProgress.prestage``); the task's milestone is the tool
+      it waits for, so it ends when the tool is made.
     """
     if task["milestone"] in done:
         return None, "milestone_reached"
@@ -567,6 +617,12 @@ def crafter_task_step(task, observation, board, done, incoming, step):
                 if board.material((position[0] + delta[0], position[1] + delta[1])) in recipe["where"]:
                     return _plan(agent_id, _MOVES[delta]), None
             return None, "no_space"
+        if kind == "approach":
+            _, material = macro
+            steps, _ = board.face_steps(position, facing, material)
+            if steps == INF:
+                return None, "unreachable"
+            return (_plan(agent_id, "noop") if steps == 0 else _plan(agent_id, "Navigator", material)), None
         raise ValueError(f"Unknown task step {macro!r}")
     return None, "completed"
 

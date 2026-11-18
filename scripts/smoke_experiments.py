@@ -62,10 +62,14 @@ class ExperimentChecks(unittest.TestCase):
     def test_appendix_suite_changes_one_design_choice_per_row(self):
         args = get_parser().parse_args(['--suite', 'appendix', '--seeds', '4', '--results_dir', self.output.name])
         rows = {row['variant']: row['command'] for row in build_matrix(args)}
-        self.assertEqual(set(rows), {'C-no-commit', 'Hscript', 'Hscript-progress-pause', 'Hscript-no-recheck'})
+        self.assertEqual(set(rows), {'C-no-commit', 'C-no-prestage', 'Hscript', 'Hscript-progress-pause',
+                                     'Hscript-no-recheck'})
 
         def flag(command, name):
             return command[command.index(name) + 1]
+
+        self.assertEqual((flag(rows['C-no-prestage'], '--condition'), flag(rows['C-no-prestage'], '--progress_prestage')),
+                         ('C', 'off'))
 
         self.assertEqual((flag(rows['C-no-commit'], '--condition'), flag(rows['C-no-commit'], '--progress_commit')),
                          ('C', 'off'))

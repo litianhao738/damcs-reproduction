@@ -119,7 +119,8 @@ class InterventionController:
                  clock=time.monotonic, revalidation="incremental", environment="crafter",
                  search_agents=None, selection="minimal", review_trigger="signals", review_cooldown=10,
                  stall_steps=None, stall_fraction=DEFAULT_STALL_FRACTION, step_limit=None,
-                 progress_mode="off", progress_commit=True, slow_margin=None, progress_pause=False):
+                 progress_mode="off", progress_commit=True, slow_margin=None, progress_pause=False,
+                 progress_prestage=True):
         """``capacity``: most agents one review may open. ``search_agents``: cap on the
         automatic repair search (None searches the smallest sufficient scope, uncapped).
         ``selection``: ``minimal`` or the ``any`` ablation. ``revalidation``:
@@ -160,7 +161,12 @@ class InterventionController:
         option is recomputed on the state when the reply arrives (a stale option falls
         back to the automatic choice). A review whose milestone is reached in the
         meantime closes on its own. ``progress_pause=True`` is the ablation that holds
-        the agents of the listed options, following ``pause_mode``."""
+        the agents of the listed options, following ``pause_mode``.
+
+        ``progress_prestage`` (with ``auto`` or ``human`` progress repair): send a free
+        agent ahead to a far material whose tool is about to be made, as a locked task
+        that ends when the tool exists (``CrafterProgress.prestage``). Applied without
+        asking, in C and H alike."""
         if revalidation not in ("incremental", "full", "none"):
             raise ValueError("revalidation must be 'incremental', 'full' or 'none'")
         if review_trigger not in REVIEW_TRIGGERS:
@@ -197,7 +203,8 @@ class InterventionController:
         self.requests_by_kind = Counter()
         # Progress repair state.
         self.progress_mode, self.progress_commit = progress_mode, progress_commit
-        self.progress_pause = progress_pause
+        self.progress_pause, self.progress_prestage = progress_pause, progress_prestage
+        self.prestage_releases = Counter()
         self.slow_margin = slow_margin_for(slow_margin, step_limit)
         self.tasks = {}            # agent id -> locked task
         self.progress_hold = {}    # milestone -> step until which a reviewer's "keep" holds
@@ -616,9 +623,13 @@ class InterventionController:
         agent = agents[agent_id]
         agent.progress_task = None
         self.adapter.release_agent(agent)
-        self.task_releases[reason] += 1
-        if reason in ("milestone_reached", "completed"):
-            self.progress_counts["tasks_completed"] += 1
+        if task.get("prestage"):
+            # Sent ahead: "milestone_reached" means the awaited tool now exists.
+            self.prestage_releases[reason] += 1
+        else:
+            self.task_releases[reason] += 1
+            if reason in ("milestone_reached", "completed"):
+                self.progress_counts["tasks_completed"] += 1
         notes = getattr(agent, "intervention_notes", None)
         if notes is not None:
             notes.append(f"Team assignment for {task['milestone']} ended: {reason}. Plan your next action yourself.")
@@ -635,7 +646,7 @@ class InterventionController:
     def _progress_analysis(self, agents, observations, responses, plans, **options):
         started = time.perf_counter()
         step = agents[0].step
-        handled = {task["milestone"] for task in self.tasks.values()}
+        handled = {task["milestone"] for task in self.tasks.values() if not task.get("prestage")}
         handled |= {milestone for milestone, until in self.progress_hold.items() if step < until}
         if self.pending is not None and self.pending.get("kind") == "progress":
             handled.add(self.pending["milestone"])  # waits for the reviewer
@@ -660,10 +671,13 @@ class InterventionController:
             } for problem in problems])
         if self.progress_mode == "log":
             return
-        used = set()
+        used, reserved = set(), set()
         for problem in problems:
             options = [option for option in problem["options"] if not option_agents(option) & used]
             if not options:
+                # Waits for the next step; nobody it needs is sent ahead elsewhere meanwhile.
+                if problem["options"]:
+                    reserved |= option_agents(problem["options"][0])
                 continue
             if self.progress_mode == "human" and self.pending is None:
                 skipped = self._progress_request(agents, observations, plans, problem, options)
@@ -672,6 +686,41 @@ class InterventionController:
                 self.event("review_skipped", step, reason=skipped, review_kind="progress", milestone=problem["milestone"])
             self._apply_progress(agents, observations, responses, plans, options[0], "auto")
             used |= option_agents(options[0])
+        if self.progress_prestage:
+            self._prestage(agents, observations, responses, effective_plans(responses, plans), used | reserved)
+
+    def _prestage(self, agents, observations, responses, plans, used):
+        """Send free agents ahead to far materials whose tools are about to be made."""
+        step = agents[0].step
+        skip = {task["prestage"] for task in self.tasks.values() if task.get("prestage")}
+        free = self._free_agents(agents, responses) - set(used)
+        if self.pending is not None:
+            free -= set(self.pending.get("scope", ()))  # keep the open review's options valid
+        proposals = self.adapter.prestage_analysis(plans, observations, self.adapter.goals(agents, responses),
+                                                   free, self.slow_margin, skip)
+        replies = {reply["id"]: reply for reply in responses}
+        for proposal in proposals:
+            agent_id = proposal["agent"]
+            budget = (math.ceil(proposal["estimate"] * TASK_BUDGET_FACTOR) + TASK_BUDGET_EXTRA
+                      + 2 * self.slow_margin)  # the walk, then some waiting for the tool
+            task = {"agent_id": agent_id, "option_id": proposal["option_id"], "milestone": proposal["after"],
+                    "prestage": proposal["milestone"], "macros": [["approach", proposal["material"]]],
+                    "index": 0, "state": {}, "started": step, "budget": budget, "estimate": proposal["estimate"],
+                    "source": "prestage", "request_id": None}
+            plan, reason = self.adapter.task_plans({agent_id: task}, observations, step)[agent_id]
+            if reason is not None:
+                continue
+            self.tasks[agent_id] = task
+            self._override(replies, agents, agent_id, plan, "progress-prestage", None)
+            agents[agent_id].progress_task = proposal["option_id"]
+            notes = getattr(agents[agent_id], "intervention_notes", None)
+            if notes is not None:
+                notes.append(f"Team assignment: walk to the nearest {proposal['material']} and wait there; the "
+                             f"tool for it ({proposal['after'].replace('make_', '')}) will be shared to you "
+                             f"as soon as it is made.")
+            self.progress_counts["prestaged"] += 1
+            self.event("progress_prestaged", step, agent=agent_id, milestone=proposal["milestone"],
+                       after=proposal["after"], material=proposal["material"], estimate=proposal["estimate"])
 
     def _progress_signals(self, problem, options, step):
         if self.review_trigger == "all":
@@ -912,6 +961,8 @@ class InterventionController:
             "requests_legal": self.requests_by_kind["legal"], "requests_progress": self.requests_by_kind["progress"],
             "progress_mode": self.progress_mode, "progress_commit": self.progress_commit,
             "progress_pause": self.progress_pause, "slow_margin": self.slow_margin,
+            "progress_prestage": self.progress_prestage, "progress_prestaged": counts["prestaged"],
+            "progress_prestage_releases": dict(self.prestage_releases),
             "progress_target_steps": counts["target_steps"],
             "progress_targets_by_type": {key[len("targets_"):]: value for key, value in counts.items()
                                          if key.startswith("targets_")},
