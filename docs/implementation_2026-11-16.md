@@ -107,7 +107,7 @@ python run.py --condition H --agent_num 6 --step_num 350 --review_max_agents 2 -
 
 ## 4. 对比与消融入口
 
-正式要跑的三张表（主实验、部件消融、跨模型对比）及其统一设置、指标和运行前待办，见 [实验表设计](experiment_tables_2026-11-17.md)。2026-11-18 起表格条件为 A、B、C、H（B 为合法性修复，C 在其上自动处理"合法但慢"的计划，H 为 C 的人审版；编号变更见下文），设计见 [进度问题修复设计](progress_repair_design_2026-11-18.md)，实现见下面第 4.1 节。三张表都只跑 MA-Crafter；CUBE 的代码保留，可作附录，2026-11-18 起不进表格。2026-11-17 起补齐了运行三张表所需的部分：任意 OpenAI 兼容接口与命名模型配置（`config/model_profiles.json`、`scripts/run_with_model.py`）、独立的 Embedding 配置、表 2 的消融套件（`--suite ablation`，从 C 逐个去掉模块：`C-no-legality`、`C-no-llm`；模块内部的设计检验在 `--suite appendix`：`C-no-commit`、`Hscript`、`Hscript-global-wait`、`Hscript-no-recheck`）。`--agent_llm off` 让所有 Agent 一律给出 noop 计划，不调用对话模型和 Embedding，用于"只靠机制"的对照以及钻石步数、改动人数和费用等汇总字段。
+正式要跑的三张表（主实验、部件消融、跨模型对比）及其统一设置、指标和运行前待办，见 [实验表设计](experiment_tables_2026-11-17.md)。2026-11-18 起表格条件为 A、B、C、H（B 为合法性修复，C 在其上自动处理"合法但慢"的计划，H 为 C 的人审版；编号变更见下文），设计见 [进度问题修复设计](progress_repair_design_2026-11-18.md)，实现见下面第 4.1 节。三张表都只跑 MA-Crafter；CUBE 的代码保留，可作附录，2026-11-18 起不进表格。2026-11-17 起补齐了运行三张表所需的部分：任意 OpenAI 兼容接口与命名模型配置（`config/model_profiles.json`、`scripts/run_with_model.py`）、独立的 Embedding 配置、表 2 的消融套件（`--suite ablation`，从 C 逐个去掉模块：`C-no-legality`、`C-no-progress`（保留看板）、`C-no-prestage`、`C-no-board`、`C-no-llm`；模块内部的设计检验在 `--suite appendix`：`C-no-commit`、`Hscript`、`Hscript-progress-pause`、`Hscript-no-recheck`）。汇总表另算接管比例 `takeover_share`（锁定执行的智能体步数占全部智能体步数的比例）。`--agent_llm off` 让所有 Agent 一律给出 noop 计划，不调用对话模型和 Embedding，用于"只靠机制"的对照以及钻石步数、改动人数和费用等汇总字段。
 
 | 条件 | 最终行为 | `--progress_mode` |
 | --- | --- | --- |

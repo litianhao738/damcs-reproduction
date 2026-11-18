@@ -43,7 +43,7 @@ class ExperimentChecks(unittest.TestCase):
     def test_ablation_suite_removes_one_module_from_c(self):
         args = get_parser().parse_args(['--suite', 'ablation', '--seeds', '4', '--results_dir', self.output.name])
         rows = {row['variant']: row['command'] for row in build_matrix(args)}
-        self.assertEqual(set(rows), {'C-no-legality', 'C-no-board', 'C-no-llm'})
+        self.assertEqual(set(rows), {'C-no-legality', 'C-no-progress', 'C-no-prestage', 'C-no-board', 'C-no-llm'})
 
         def flag(command, name):
             return command[command.index(name) + 1]
@@ -55,6 +55,11 @@ class ExperimentChecks(unittest.TestCase):
         # C itself: repair, 2 rounds, automatic legality and progress repair, model on. Without
         # legality repair, illegal plans are only recorded (as in A) and progress repair stays.
         self.assertEqual(settings(rows['C-no-legality']), ('diagnose', '0', 'off', 'auto'))
+        # Without progress repair the board stays on, so only one module differs from C.
+        self.assertEqual(settings(rows['C-no-progress']), ('repair', '2', 'auto', 'log'))
+        self.assertEqual(flag(rows['C-no-progress'], '--team_board'), 'on')
+        self.assertEqual((flag(rows['C-no-prestage'], '--condition'), flag(rows['C-no-prestage'], '--progress_prestage')),
+                         ('C', 'off'))
         self.assertEqual(flag(rows['C-no-legality'], '--agent_llm'), 'on')
         self.assertEqual((flag(rows['C-no-llm'], '--condition'), flag(rows['C-no-llm'], '--agent_llm')), ('C', 'off'))
         self.assertTrue(rows['C-no-llm'][rows['C-no-llm'].index('--results_dir') + 1].endswith('nollm'))
@@ -62,14 +67,10 @@ class ExperimentChecks(unittest.TestCase):
     def test_appendix_suite_changes_one_design_choice_per_row(self):
         args = get_parser().parse_args(['--suite', 'appendix', '--seeds', '4', '--results_dir', self.output.name])
         rows = {row['variant']: row['command'] for row in build_matrix(args)}
-        self.assertEqual(set(rows), {'C-no-commit', 'C-no-prestage', 'Hscript', 'Hscript-progress-pause',
-                                     'Hscript-no-recheck'})
+        self.assertEqual(set(rows), {'C-no-commit', 'Hscript', 'Hscript-progress-pause', 'Hscript-no-recheck'})
 
         def flag(command, name):
             return command[command.index(name) + 1]
-
-        self.assertEqual((flag(rows['C-no-prestage'], '--condition'), flag(rows['C-no-prestage'], '--progress_prestage')),
-                         ('C', 'off'))
 
         self.assertEqual((flag(rows['C-no-commit'], '--condition'), flag(rows['C-no-commit'], '--progress_commit')),
                          ('C', 'off'))
@@ -171,9 +172,10 @@ class ExperimentChecks(unittest.TestCase):
         self.assertTrue(all('KEY' not in name for name in config['models']))
 
     def test_export_preserves_failures_and_distinguishes_human_from_scripted(self):
-        write_json(self.directory / 'config.json', {'condition': 'H', 'reviewer': 'scripted', 'seed': 4})
+        write_json(self.directory / 'config.json', {'condition': 'H', 'reviewer': 'scripted', 'seed': 4,
+                                                    'agent_num': 6})
         write_json(self.directory / 'intervention_summary.json', {
-            'task_success': False, 'total_steps': 20,
+            'task_success': False, 'total_steps': 20, 'committed_agent_steps': 12,
             'outcomes': [{'source': 'human', 'recovered': True}, {'source': 'auto', 'recovered': False}],
             'progress_exact_commits': 1, 'progress_exact_success': 1, 'progress_tasks': 3,
             'progress_tasks_completed': 2,
@@ -187,6 +189,8 @@ class ExperimentChecks(unittest.TestCase):
         self.assertEqual((row['scripted_replies'], row['recoveries'], row['recovery_attempts']), (1, 1, 2))
         # Legality and progress repairs together: (1 + 1 + 2) of (2 + 1 + 3).
         self.assertAlmostEqual(row['repair_success_rate'], 4 / 6)
+        # 12 locked agent-steps of 6 agents x 20 steps.
+        self.assertAlmostEqual(row['takeover_share'], 0.1)
         export_rows(self.directory, [row, {'completed': False, 'exit_code': 1}])
         rows = json.loads((self.directory / 'episodes.json').read_text(encoding='utf-8'))
         self.assertEqual(len(rows), 2)

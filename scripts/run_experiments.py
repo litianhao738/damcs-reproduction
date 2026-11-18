@@ -38,15 +38,20 @@ def positive_int(value):
     return number
 
 
-# Table 2: remove one module at a time from C, the automatic full system. The rows
-# "- progress repair" (= B) and "- human review" (H vs C) reuse table 1 and are not run
-# here. C-no-legality turns the whole legality repair off, both replanning and the repair
-# scope S: illegal plans are only recorded, as in A, and progress repair stays on. C-no-board
-# hides the shared team board. C-no-llm switches every agent's language model off: what the
-# mechanisms do on their own.
+# Table 2: remove one module (or the prestaging part of progress repair) at a time from C,
+# the automatic full system; "- human review" (H vs C) reuses table 1.
+# - C-no-legality: neither replanning nor the repair scope S; illegal plans are only recorded,
+#   as in A. Progress repair and the board stay on.
+# - C-no-progress: progress problems are only recorded; the board stays on (unlike B).
+# - C-no-prestage: progress repair without sending agents ahead.
+# - C-no-board: the shared team board is hidden.
+# - C-no-llm: every agent's language model is off: what the mechanisms do on their own.
 ABLATIONS = [
     ('C-no-legality', 'custom', {'coordination_mode': 'diagnose', 'repair_rounds': 0, 'scope_mode': 'off',
                                  'review_strategy': 'verified', 'progress_mode': 'auto'}),
+    ('C-no-progress', 'custom', {'coordination_mode': 'repair', 'repair_rounds': 2, 'scope_mode': 'auto',
+                                 'review_strategy': 'verified', 'progress_mode': 'log', 'team_board': 'on'}),
+    ('C-no-prestage', 'C', {'progress_prestage': 'off'}),
     ('C-no-board', 'C', {'team_board': 'off'}),
     ('C-no-llm', 'C', {'agent_llm': 'off'}),
 ]
@@ -58,7 +63,6 @@ ABLATIONS = [
 # can still measure it offline when replanning leaves legality problems unsolved.
 APPENDIX = [
     ('C-no-commit', 'C', {'progress_commit': 'off'}),
-    ('C-no-prestage', 'C', {'progress_prestage': 'off'}),
     ('Hscript', 'H', {'reviewer': 'scripted'}),
     ('Hscript-progress-pause', 'H', {'reviewer': 'scripted', 'progress_pause': 'on'}),
     ('Hscript-no-recheck', 'H', {'reviewer': 'scripted', 'revalidation': 'none'}),
@@ -279,6 +283,9 @@ def summarize_run(directory, step_limit=None):
                                           if summary.get('progress_exact_commits') else None)
     row['progress_task_completion_rate'] = (summary['progress_tasks_completed'] / summary['progress_tasks']
                                             if summary.get('progress_tasks') else None)
+    # Takeover share: agent-steps run as locked tasks (no language-model call) over all agent-steps.
+    agent_steps = (config.get('agent_num') or 0) * (summary.get('total_steps') or 0)
+    row['takeover_share'] = (summary.get('committed_agent_steps') or 0) / agent_steps if agent_steps else None
     # Table 1's repair success rate: legality repairs (scope S) and progress repairs
     # (exact one-step edits and locked tasks) that reached their target, over all submitted.
     attempts = len(outcomes) + (summary.get('progress_exact_commits') or 0) + (summary.get('progress_tasks') or 0)
