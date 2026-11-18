@@ -126,6 +126,7 @@ def main():
     parser.add_argument('--block_specs', default='2:1,3:1', help='Weight:count pairs, e.g. 2:1,3:1')
     args = parser.parse_args()
     apply_condition(args)
+    args.team_board = 'off'  # the shared team board is Crafter-only
     output = Path(args.results_dir)
     controller = InterventionController(
         output, mode=args.scope_mode, strategy=args.review_strategy, capacity=args.review_max_agents,

@@ -19,6 +19,7 @@ from pathlib import Path
 import time
 from memory_system.intervention import InterventionController, write_json
 from memory_system.review_server import ReviewServer
+from memory_system.team_board import TeamBoard
 from memory_system.llm_api import MODEL_USAGE, get_model_usage
 from memory_system.checkpoint import (
     CheckpointError, load_checkpoint, remove_checkpoint, save_checkpoint, trim_after_checkpoint,
@@ -35,10 +36,12 @@ class CompleteMulitAgentSimulation:
                  coordination_mode="repair", repair_rounds=2, coordination_log=None,
                  scope_mode="suggest", scope_max_agents=None, intervention=None,
                  execution_guard=None, review_step_seconds=1.0, reviewer=None, scope_selection="minimal",
-                 checkpoint_dir=None, checkpoint_every=0, source_sha256=None, resume_state=None):
+                 checkpoint_dir=None, checkpoint_every=0, source_sha256=None, resume_state=None,
+                 team_board=False):
         """``checkpoint_every``: save the whole running state to ``checkpoint_dir`` every
         that many steps (0 disables). ``resume_state``: a loaded checkpoint to continue from;
-        its environment, agents and controller must be the ones passed in."""
+        its environment, agents and controller must be the ones passed in. ``team_board``:
+        show every agent the shared team board (``memory_system.team_board``)."""
         self.checkpoint_dir, self.checkpoint_every = checkpoint_dir, checkpoint_every
         self.source_sha256, self.resume_state = source_sha256, resume_state
         self.agents = agents
@@ -66,6 +69,8 @@ class CompleteMulitAgentSimulation:
         self.reporter = SimulationLogger()
         self.agent_state_manager = AgentStateManager()
         self.simulation_context_manager = SimulationContextManager(self.n_players)
+        if team_board:
+            self.simulation_context_manager.board = TeamBoard(self.intervention)
         self.agent_thinking_processor = AgentThinkingProcessor()
 
     def run_simulation(self):
@@ -135,7 +140,7 @@ class CompleteMulitAgentSimulation:
                     self.intervention.prepare(self.agents, dict(enumerate(info)))
                 if not done:
                     agents_with_new_thought = self.agent_state_manager.identify_agents_needing_thought(self.agents, info)
-                    agents_contexts = self.simulation_context_manager.create_agent_contexts(self.agents, info)
+                    agents_contexts = self.simulation_context_manager.create_agent_contexts(self.agents, info, _step)
                     agents_responses = self.agent_thinking_processor.process_agent_thinking_parallel(
                         self.agents, agents_contexts, info,
                         coordination_mode=self.coordination_mode,
@@ -333,6 +338,7 @@ def main():
                 if args.reviewer == 'scripted' else None,
             checkpoint_dir=round_results_dir, checkpoint_every=args.checkpoint_every,
             source_sha256=config['source_sha256'], resume_state=state,
+            team_board=args.team_board == 'on',
         )
         try:
             results_df = simulation.run_simulation()['stats_df']

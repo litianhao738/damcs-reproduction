@@ -41,11 +41,13 @@ def positive_int(value):
 # Table 2: remove one module at a time from C, the automatic full system. The rows
 # "- progress repair" (= B) and "- human review" (H vs C) reuse table 1 and are not run
 # here. C-no-legality turns the whole legality repair off, both replanning and the repair
-# scope S: illegal plans are only recorded, as in A, and progress repair stays on. C-no-llm
-# switches every agent's language model off: what the mechanisms do on their own.
+# scope S: illegal plans are only recorded, as in A, and progress repair stays on. C-no-board
+# hides the shared team board. C-no-llm switches every agent's language model off: what the
+# mechanisms do on their own.
 ABLATIONS = [
     ('C-no-legality', 'custom', {'coordination_mode': 'diagnose', 'repair_rounds': 0, 'scope_mode': 'off',
                                  'review_strategy': 'verified', 'progress_mode': 'auto'}),
+    ('C-no-board', 'C', {'team_board': 'off'}),
     ('C-no-llm', 'C', {'agent_llm': 'off'}),
 ]
 
@@ -70,7 +72,7 @@ def variants(args):
     base = {'scope_max_agents': args.scope_max_agents, 'evidence_mode': args.evidence_mode,
             'pause_mode': args.pause_mode, 'revalidation': args.revalidation,
             'scope_selection': 'minimal', 'reviewer': args.reviewer, 'progress_commit': 'on',
-            'progress_pause': 'off',
+            'progress_pause': 'off', 'team_board': 'auto',
             'agent_llm': 'on'}
     if args.suite in ('ablation', 'appendix'):
         rows = ABLATIONS if args.suite == 'ablation' else APPENDIX
@@ -100,6 +102,7 @@ def build_matrix(args):
         label = '_'.join(parts + (['any'] if s['scope_selection'] == 'any' else [])
                          + (['nocommit'] if s['progress_commit'] == 'off' else [])
                          + (['progpause'] if s['progress_pause'] == 'on' else [])
+                         + (['noboard'] if s['team_board'] == 'off' else [])
                          + (['nollm'] if s['agent_llm'] == 'off' else []))
         directory = Path(args.results_dir).resolve() / label
         command = [sys.executable, '-B', str(ROOT / ('run_cube.py' if args.environment == 'cube' else 'run.py')),
@@ -114,6 +117,7 @@ def build_matrix(args):
                    '--evidence_mode', s['evidence_mode'], '--pause_mode', s['pause_mode'],
                    '--revalidation', s['revalidation'], '--scope_selection', s['scope_selection'],
                    '--progress_commit', s['progress_commit'], '--progress_pause', s['progress_pause'],
+                   '--team_board', s['team_board'],
                    '--agent_llm', s['agent_llm'],
                    *(['--slow_margin', str(args.slow_margin)] if args.slow_margin is not None else []),
                    '--reviewer', s['reviewer'], '--reviewer_id', args.reviewer_id,
@@ -139,6 +143,7 @@ def build_matrix(args):
                'review_cooldown': args.review_cooldown, 'stall_steps': args.stall_steps,
                'stall_fraction': args.stall_fraction, 'step_limit': args.step_num,
                'progress_commit': s['progress_commit'], 'progress_pause': s['progress_pause'],
+               'team_board': s['team_board'],
                'agent_llm': s['agent_llm'],
                'slow_margin_arg': args.slow_margin}
         if profile:
@@ -203,6 +208,7 @@ def summarize_run(directory, step_limit=None):
     row = {key: config.get(key) for key in (
         'environment', 'condition', 'seed', 'repeat_id', 'reviewer', 'reviewer_id', 'scope_max_agents',
         'review_max_agents', 'scope_selection', 'human_requests', 'review_trigger', 'review_cooldown', 'stall_steps', 'stall_fraction',
+        'team_board',
         'evidence_mode', 'pause_mode',
         'revalidation', 'source_sha256', 'git_head',
     )}

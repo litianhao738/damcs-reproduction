@@ -14,6 +14,8 @@ from .intervention import write_json
 # of replanning, with the verified repair scope S as a fallback when a plan is still
 # illegal afterwards), automatic progress repair for legal but slow plans (C), and a person
 # choosing at critical moments (H). A and B record progress problems without acting.
+# C and H also show every agent the shared team board (memory_system.team_board; the
+# --team_board flag, 'auto' by default, follows the progress mode).
 # History, all on 2026-11-18:
 # - The problem-owner review (H1) and the verified-scope review (H2) were merged into H,
 #   which keeps H2's review interface. Older results named H2 are H without progress repair.
@@ -34,6 +36,9 @@ def apply_condition(args):
     if args.condition != 'custom':
         (args.coordination_mode, args.repair_rounds, args.scope_mode, args.review_strategy,
          args.progress_mode) = CONDITIONS[args.condition]
+    # The shared team board comes with the progress module (C and H) unless set explicitly.
+    if getattr(args, 'team_board', None) == 'auto':
+        args.team_board = 'on' if args.progress_mode in ('auto', 'human') else 'off'
 
 
 def experiment_config(args, environment):

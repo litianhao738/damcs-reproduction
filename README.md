@@ -262,10 +262,17 @@ The controller in `memory_system/intervention.py` keeps edit permissions S, revi
 | --- | --- |
 | A | Autonomous planning and the common execution guard; progress problems are only recorded |
 | B | A plus legality repair: at most two targeted replanning rounds, then verified scope search and automatic execution for plans that are still illegal |
-| C | B plus automatic progress repair: the first-ranked option is applied |
+| C | B plus automatic progress repair (the first-ranked option is applied) and the shared team board |
 | H | C with human review at critical moments, for both kinds of problem; otherwise as C |
 
-The framework has three modules on top of the DAMCS base: legality repair, progress repair and human review at critical moments. The verified repair scope S is a fallback inside legality repair, not a module of its own.
+The framework has four modules on top of the DAMCS base: legality repair, progress repair, the shared team board, and human review at critical moments. The verified repair scope S is a fallback inside legality repair, not a module of its own.
+
+The **shared team board** (`memory_system/team_board.py`, `--team_board auto|on|off`; `auto` turns it on with progress repair, i.e. in C and H) replaces the base's chain of "the previous agent's goal" with a view of the whole team.
+
+- **Progress ledger** (after Magentic-One): milestones done, the next ones and who works on each, and the steps since the last new milestone.
+- **Status lines** (after the shared context in Microsoft Agensh): each agent's own position, low vitals, goal, plan or locked task, key items, and what it sees in its own 9x7 view.
+
+It only broadcasts what each agent already knows and gives no orders.
 
 A **progress problem** is a step where every plan is legal, but the team's next milestone is clearly slow.
 
@@ -307,7 +314,7 @@ Crafter compact evidence removes inventory/view groups only when the declared on
 
 Each episode saves `config.json` (seed, condition, source hashes and model names), `model_usage.json`, `events.jsonl`, `intervention_summary.json`, immutable requests under `reviews/`, and replayable submitted-state snapshots under `failures/`. Logs distinguish approval, commit, actual target recovery and final task success. Batch runs export `episodes.json` and `episodes.csv`, retaining failed episodes and process exit codes. Use `--summarize_only` to regenerate the exports. Crafter episodes save their whole running state to `checkpoint.pkl` every `--checkpoint_every` steps (default 5); rerunning the same command with `--resume` skips finished episodes, continues interrupted Crafter episodes from their checkpoint, and reruns the rest, keeping failed attempts as `<dir>.failedN`. A checkpoint written by different code is refused.
 
-The planned result tables, their commands and the exported fields are in [docs/experiment_tables_2026-11-17.md](docs/experiment_tables_2026-11-17.md). `--suite ablation` runs table 2, removing one module at a time from C: no legality repair (`C-no-legality`: neither replanning nor scope S; illegal plans are only recorded, as in A) and the language model switched off (`C-no-llm`, `--agent_llm off`: every agent gives an idle plan and no model is called), which shows what the mechanisms do alone. `--suite appendix` runs the design checks inside modules: `C-no-commit`, and scripted-review H in full, with the agents held during progress reviews (`Hscript-progress-pause`), and without the pre-commit recheck. Batch exports also count illegal plans from `coordination.jsonl` (`illegal_plan_steps`, `illegal_plans_first`, `illegal_plans_after_replan`). All three tables use MA-Crafter only; CUBE remains available for an appendix. Other batch sweeps: `--suite capacity --conditions B H`, `--suite evidence --conditions H`, and `--suite waiting --conditions H`. Frozen-snapshot evaluation also compares individual problem witnesses with joint consistency; it is an offline diagnostic ablation, not a full-task performance claim. Use an episode as the statistical unit and record reviewer identities separately for a real human study.
+The planned result tables, their commands and the exported fields are in [docs/experiment_tables_2026-11-17.md](docs/experiment_tables_2026-11-17.md). `--suite ablation` runs table 2, removing one module at a time from C: no legality repair (`C-no-legality`: neither replanning nor scope S; illegal plans are only recorded, as in A), no team board (`C-no-board`), and the language model switched off (`C-no-llm`, `--agent_llm off`: every agent gives an idle plan and no model is called), which shows what the mechanisms do alone. `--suite appendix` runs the design checks inside modules: `C-no-commit`, and scripted-review H in full, with the agents held during progress reviews (`Hscript-progress-pause`), and without the pre-commit recheck. Batch exports also count illegal plans from `coordination.jsonl` (`illegal_plan_steps`, `illegal_plans_first`, `illegal_plans_after_replan`). All three tables use MA-Crafter only; CUBE remains available for an appendix. Other batch sweeps: `--suite capacity --conditions B H`, `--suite evidence --conditions H`, and `--suite waiting --conditions H`. Frozen-snapshot evaluation also compares individual problem witnesses with joint consistency; it is an offline diagnostic ablation, not a full-task performance claim. Use an episode as the statistical unit and record reviewer identities separately for a real human study.
 
 ### CUBE transfer check
 

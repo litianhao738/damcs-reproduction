@@ -43,7 +43,7 @@ class ExperimentChecks(unittest.TestCase):
     def test_ablation_suite_removes_one_module_from_c(self):
         args = get_parser().parse_args(['--suite', 'ablation', '--seeds', '4', '--results_dir', self.output.name])
         rows = {row['variant']: row['command'] for row in build_matrix(args)}
-        self.assertEqual(set(rows), {'C-no-legality', 'C-no-llm'})
+        self.assertEqual(set(rows), {'C-no-legality', 'C-no-board', 'C-no-llm'})
 
         def flag(command, name):
             return command[command.index(name) + 1]

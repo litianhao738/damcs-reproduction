@@ -580,10 +580,13 @@ class SimulationContextManager:
     
     def __init__(self, n_players):
         self.context_generator = CollaborationContextGenerator(n_players)
-    
-    def create_agent_contexts(self, agents, info):
+        # Optional shared team board (memory_system.team_board.TeamBoard), set by the runner.
+        self.board = None
+
+    def create_agent_contexts(self, agents, info, step=None):
         """Create contexts for all agents that need to think"""
         agents_contexts = {}
+        boards = self.board.render(agents, info, step) if self.board is not None else {}
         # agents_with_new_thought = [False] * len(agents)
         for agent in agents:
             if agent.review_paused:
@@ -594,7 +597,7 @@ class SimulationContextManager:
             if agent.action_status != ActionStatus.IN_PROGRESS and info[agent.id]['sleeping'] == False:
                 # agents_with_new_thought[agent.id] = True
                 collaboration_context = self.context_generator.generate_context_for_agent(agent, agents)
-                context += collaboration_context
+                context += collaboration_context + boards.get(agent.id, "")
                 agents_contexts[agent.id] = context
         
         return agents_contexts
@@ -653,6 +656,10 @@ def get_arg_parser():
     parser.add_argument('--progress_commit', choices=['on', 'off'], default='on',
                         help="'on' locks multi-step progress assignments until done; 'off' is the ablation "
                              "that only writes them into the agents' context (default: on).")
+    parser.add_argument('--team_board', choices=['auto', 'on', 'off'], default='auto',
+                        help="Crafter: show every agent the shared team board (each agent's own status and "
+                             "the team's progress). 'auto' (default) turns it on with progress repair "
+                             "(conditions C and H) and off otherwise.")
     parser.add_argument('--progress_pause', choices=['off', 'on'], default='off',
                         help="'off': nobody waits during a progress review, and the chosen option is "
                              "rechecked when the reply arrives (default); 'on' is the ablation that holds "
