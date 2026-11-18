@@ -268,6 +268,15 @@ The controller in `memory_system/intervention.py` keeps edit permissions S, revi
 
 Renamed on 2026-11-17: the old related-group condition (then called H1, all fields open) was removed because its free-form group edits were hard to quantify, and the problem-owner condition was renamed from H0 to H1. All conditions use submitted observations and the same environment rules. The candidate domain is shared; the selected edit scope controls which agents and fields the reviewer can change.
 
+Planned change, designed on 2026-11-18 but not yet implemented: the result tables will use conditions A, B, C, D and H.
+
+- A, B and C stay as they are.
+- D adds automatic repair of "progress problems": every plan is legal, but the team's next milestone is clearly slow. D may reassign who does a milestone; one-step options are checked exactly and multi-step options are estimated.
+- H is the human-review version of D. It merges H1 and H2 and keeps H2's review interface.
+- The question H1 used to answer moves to an offline comparison on saved snapshots.
+
+See [docs/progress_repair_design_2026-11-18.md](docs/progress_repair_design_2026-11-18.md). Until it is built, the code still has A, B, C, H1 and H2, and the tables should not be run.
+
 ```powershell
 # Automatic scope execution
 python run.py --condition C --agent_num 6 --step_num 350 --seed 4 --results_dir results\auto --no_plot

@@ -2,11 +2,18 @@
 
 日期：2026-11-17。本文定义要跑的三张表、统一设置、指标和运行方法。表中空格在实验完成后填写；未填的格子不得用估计值代替。
 
-> **暂缓开跑（2026-11-18）**：C、H1、H2 将扩展为同时修复"合法但慢"的计划（进度问题），表 2 将增加 `C-legal-only`、`C-no-commit` 两行，详见 [进度问题修复设计](progress_repair_design_2026-11-18.md)。这项改动实现并通过测试之前，表 1–3 都不要开跑；现有代码跑出的 C、H1、H2 结果不能与改动后的结果放进同一张表。
+> **暂缓开跑（2026-11-18 修订）**：条件改为 A、B、C、D、H。
+>
+> - A、B、C 不变。
+> - 新增 D：在 C 的基础上处理"合法但慢"的计划（进度问题），由机器自动选方案。
+> - 原 H1、H2 合并为人审条件 H：使用原 H2 的审阅界面，并扩展到进度问题。
+> - 原 H1 要回答的问题改为表 2 中的离线统计。
+>
+> 详见 [进度问题修复设计](progress_repair_design_2026-11-18.md)。本文的条件、规模和命令已按新方案写，但代码里目前仍只有 A、B、C、H1、H2，D、H 和新字段要等实现后才能使用。实现并通过测试之前，表 1–3 都不要开跑。
 
 ## 统一设置
 
-主环境是 MA-Crafter（挖钻石），三张表都在这里完整运行。CUBE 只在表 1 中跑 B、C、H2 三个条件，用来检验机制换到另一个环境是否仍然有效；表 2、表 3 不跑 CUBE。
+主环境是 MA-Crafter（挖钻石），三张表都在这里完整运行。CUBE 只在表 1 中跑 B、C、D、H 四个条件，用来检验机制换到另一个环境是否仍然有效；表 2、表 3 不跑 CUBE。
 
 | 项目 | MA-Crafter（主环境） | CUBE（仅表 1） |
 | --- | --- | --- |
@@ -19,13 +26,18 @@
 其余设置：
 
 - 重规划最多 2 轮。
-- 人审不设次数上限，只在**关键时刻**问人，其余问题一律自动修复。关键时刻用与环境无关的三个信号判断（`--review_trigger signals`，默认），满足任意一个即可：
+- 要修的问题分两类：
+  - **不合法问题**：某个 Agent 这一步做不成，C、D、H 处理；
+  - **进度问题**：计划都合法，但团队下一个里程碑明显来得太慢，只有 D、H 处理。A、B、C 只记录进度问题，不处理。
+  - 定义见 [进度问题修复设计](progress_repair_design_2026-11-18.md)。
+- 人审（条件 H）不设次数上限，只在**关键时刻**问人，其余问题一律按 D 的方式自动处理。两类问题共用同一套关键时刻判断：用与环境无关的三个信号（`--review_trigger signals`，默认），满足任意一个即可：
   - **要做取舍**（`choice`）：能修好这个问题的方案不止一个，而且改的是不同的 Agent。机器只会按"少改人"机械地选，该打断谁需要人判断。
   - **拿不准**（`unknown`）：信息不全，无法确定能不能修好。
-  - **团队卡住**（`stalled`）：团队进度连续一段时间没有增长，此时存在的问题都算。这段时间按每局步数的比例计算（`--stall_fraction 0.1`），Crafter 350 步对应 35 步，CUBE 30 步对应 3 步；`--stall_steps` 可改为固定步数。进度由环境提供：Crafter 是全队解锁的不同成就数，CUBE 是团队得分。
+  - **团队卡住**（`stalled`）：团队进度连续一段时间没有增长，此时存在的问题都算。这段时间按每局步数的比例计算（`--stall_fraction 0.1`），Crafter 350 步对应 35 步，CUBE 30 步对应 3 步；`--stall_steps` 可改为固定步数。进度由环境提供：Crafter 是全队达成的主线里程碑数（下文"阶段步数"的 10 个阶段；现有代码数的是全部成就，实现进度问题时一并修改），CUBE 是团队得分。
   - 同一个问题问过之后 10 步内不再重复问（`--review_cooldown 10`），避免一个卡住的问题每步都打扰审阅者。
-  - 一次人审最多开放 2 个 Agent（`--review_max_agents 2`）。H2 会同时开放能修好问题的其他已验证方案涉及的 Agent（不超过 2 个），让人可以选择改谁；"拿不准"时开放问题涉及的 Agent。
-  - 每局问人的次数因此不固定，要作为结果报告，并按信号分别统计（`requests_choice`、`requests_unknown`、`requests_stalled`）。
+  - 不合法问题：一次人审最多开放 2 个 Agent（`--review_max_agents 2`）。H 会同时开放能修好问题的其他已验证方案涉及的 Agent（不超过 2 个），让人可以选择改谁；"拿不准"时开放问题涉及的 Agent。
+  - 进度问题：把排好序的候选方案列给人，人只能选其中一个、选"不改"或跳过（跳过即按排第一的方案自动处理），不能自由修改。
+  - 每局问人的次数因此不固定，要作为结果报告，并按信号（`requests_choice`、`requests_unknown`、`requests_stalled`）和问题类型（`requests_legal`、`requests_progress`）分别统计。
   - 旧的按阶段固定名单（Crafter：铁镐、采铁、采钻石；CUBE：每次推箱失败）保留为 `--review_trigger stage`，可作对照；`--review_trigger all` 对所有问题都问人，只用于练习。
 - 人审默认使用局部等待、增量复核、精简证据，与表 2 的完整系统一致。
 - 修复搜索不设人数上限，按"先修得全、再改得少"选择。
@@ -48,14 +60,19 @@ Crafter 的主要指标是"采到钻石用了多少步"，不是成功率。已�
 | 采到钻石比例 | Crafter：350 步内采到钻石的局数比例 | `task_success` |
 | 里程碑数 | Crafter：10 个阶段里完成了几个 | `milestones_reached` |
 | CUBE 成功率、得分 | 全部箱子交付的比例；团队得分 | `task_success`、`team_score` |
-| 问题数/局 | 出现需要修复的协调问题的规划步数 | `target_snapshots` |
+| 问题数/局 | 出现需要修复的不合法问题的规划步数 | `target_snapshots` |
 | 有方案比例 | 出现问题的步中，搜索找到可修复方案的比例 | `selected_snapshots / target_snapshots` |
 | 修复生效率 | 提交的修复在实际执行中达成目标事件的比例 | `recoveries / recovery_attempts` |
+| 进度问题数/局 | 检查出进度问题的规划步数，所有条件都记录（计划字段） | `progress_targets` |
+| 进度修复次数、完成率 | D、H 提交的进度修复次数；一步方案的当步生效率；多步方案在锁定期内的完成率（计划字段） | `progress_commits`、`progress_exact_success`、`progress_commit_completed` |
+| 估计误差 | 进度修复的实际步数减估计步数（计划字段） | `progress_estimate_error` |
+| 卡住总步数 | Crafter：主线里程碑超过卡住窗口没有增加的步数之和（计划字段） | `stall_steps_total` |
 | 平均改动人数 | 每次提交的修复改了几个 Agent 的计划 | `mean_edited_agents` |
 | 被打断的原计划数 | 修复把本来在做别的事的帮手改去帮忙的次数 | `interrupted_plans` |
 | 超出人审上限 | 最小修复超过 2 人、改走自动修复的次数 | `over_review_capacity` |
 | 人审次数、阅读时间 | 发出的请求数、真人阅读与修改用时 | `requests_issued`、`human_seconds` |
-| 问人的原因 | 因"要做取舍""拿不准""团队卡住"而发出的请求数（一个请求可能同时满足多个） | `requests_choice`、`requests_unknown`、`requests_stalled` |
+| 问人的原因 | 因"要做取舍""拿不准""团队卡住"而发出的请求数（一个请求可能同时满足多个）；按问题类型分开的请求数（计划字段） | `requests_choice`、`requests_unknown`、`requests_stalled`；`requests_legal`、`requests_progress` |
+| 进度问题的人审选择 | 人选了推荐方案、其他方案、"不改"、跳过的次数（计划字段） | `progress_reply_<选择>` |
 | 未问人的原因 | 不是关键时刻、同一问题在冷却期内、超出人审上限等各自的次数 | `not_critical_skips`、`over_review_capacity`；其余见 `events.jsonl` 的 `review_skipped` |
 | 技术失败 | 模型调用失败、该 Agent 沿用上一步计划的次数；JSON 格式错误后重试的次数 | `planning_failures`、`chat_json_retries` |
 | 人审回复结果 | 各种回复状态的次数（采纳、过期、无效、超时等） | `reply_<状态>`，如 `reply_stale_plan` |
@@ -69,57 +86,61 @@ Crafter 的主要指标是"采到钻石用了多少步"，不是成功率。已�
 
 ## 表 1：主实验——人审闭环是否有增量价值
 
-固定 Qwen。每格写均值，括号内写标准差或局数。CUBE 只跑 B、C、H2，其余条件的 CUBE 列填"—"。
+固定 Qwen。每格写均值，括号内写标准差或局数。CUBE 只跑 B、C、D、H，A 的 CUBE 列填"—"。
 
-| 条件 | 含义 | Crafter 钻石步数 | Crafter 采到钻石比例 | Crafter 里程碑数 | CUBE 成功率 | CUBE 得分 | 修复生效率 | 人审次数/局 | 阅读时间/局 | 每局花费 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A | DAMCS 底座：各自规划 + 动作合法性检查 | | | | — | — | — | — | — | |
-| B | A + 最多 2 轮重规划 | | | | | | — | — | — | |
-| C | B + 自动执行修复方案（最强自动对照） | | | | | | | — | — | |
-| H1 | 人审，开放出问题的 Agent | | | | — | — | | | | |
-| H2 | 人审，开放可修复范围 S（主方法） | | | | | | | | | |
+| 条件 | 含义 | Crafter 钻石步数 | Crafter 采到钻石比例 | Crafter 里程碑数 | Crafter 卡住总步数 | CUBE 成功率 | CUBE 得分 | 修复生效率 | 人审次数/局 | 阅读时间/局 | 每局花费 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A | DAMCS 底座：各自规划 + 动作合法性检查 | | | | | — | — | — | — | — | |
+| B | A + 最多 2 轮重规划 | | | | | | | — | — | — | |
+| C | B + 自动修复不合法计划（可修复范围 S） | | | | | | | | — | — | |
+| D | C + 自动处理进度问题，采用排第一的方案（最强自动对照） | | | | | | | | — | — | |
+| H | D 的人审版：关键时刻由人决定，其余同 D（主方法） | | | | | | | | | | |
 
-- **人审只保留 H1 和 H2 两种**：
-  - H1 是最直接的做法：谁出了问题，就把谁的计划开放给人。
-  - H2 是本项目的方法：只开放能修好问题的最少几个人，以及修复实际要改的字段。
-  - 编号变更（2026-11-17）：旧方案中开放整个相关小组全部字段的条件（当时叫 H1）已删除，因为它允许人在较大的范围内自由修改，结果难以量化和比较；原来的 H0 改名为 H1。旧文档中的 H0 即现在的 H1。
+- **条件变更（2026-11-18）**：
+  - 原 H1（开放出问题的 Agent）和 H2（开放可修复范围 S）合并为 H，使用原 H2 的审阅界面，并扩展到进度问题。
+  - 原 H1 对 H2 要回答的"开放谁更好"，改由表 2 的离线统计回答。因此论文中只能说 S 能修好的问题更多，不能说"人用 S 审得更好"。
+  - 新增 D，用来把"有了进度方案"和"由人来选"这两个作用分开。
+  - 更早的变更：2026-11-17 删除了开放整个相关小组的条件，并把 H0 改名为 H1。对照旧文档时：H0 即后来的 H1，现已不再作为表格条件；H2 即现在的 H。
 - **规模**：
-  - Crafter：5 个条件 × 3 个种子 × 2 次重复，共 30 局，其中 H1、H2 的 12 局需要真人审阅。
-  - CUBE：3 个条件 × 3 个种子 × 2 次重复，共 18 局，其中 H2 的 6 局需要真人审阅。
-  - 合计 48 局，其中真人审阅 18 局。每局用 `--reviewer_id` 记录审阅者编号，审阅顺序另行登记。
-  - 审阅者的操作步骤、判断标准、条件顺序轮换和登记表见 [审阅规程](review_protocol_2026-11-18.md)。
-- **主要比较**：
-  - A→B→C 逐级给出重规划（B − A）和修复搜索（C − B）的作用。
-  - H2 对 C，看人审有没有超过自动修复。
-  - H2 对 H1，看"开放能修好问题的人"是否优于"开放出问题的人"。
-  - CUBE 列看 B、C、H2 的相对关系在另一个环境中是否一致。
+  - Crafter：5 个条件 × 3 个种子 × 2 次重复，共 30 局，其中 H 的 6 局需要真人审阅。
+  - CUBE：4 个条件 × 3 个种子 × 2 次重复，共 24 局，其中 H 的 6 局需要真人审阅。
+  - 合计 54 局，其中真人审阅 12 局。每局用 `--reviewer_id` 记录审阅者编号，审阅顺序另行登记。
+  - 审阅者的操作步骤、判断标准和登记表见 [审阅规程](review_protocol_2026-11-18.md)。
+- **主要比较**：相邻两个条件只差一样东西。
+  - B − A：重规划的作用。
+  - C − B：可修复范围 S 的作用。
+  - D − C：处理进度问题的作用。
+  - H − D：人审的作用。
+  - CUBE 列看 B、C、D、H 的相对关系在另一个环境中是否一致。
 - **脚本审阅**：只能检查流程，不填入本表。
 
 ## 表 2：部件消融——每个部件是否真的起作用
 
 固定 Qwen，只跑 Crafter。在完整系统上每次只去掉或替换一个部件，其余设置不变。每个部件都有一个它直接负责的"对应指标"，判断依据是这个指标是否变差；钻石步数作为次要结果一起报告。
 
-- **自动修复部分**：以表 1 的 C 为完整系统，数值直接引用表 1，不在本表重复列出。
-  - 表 1 的 A→B→C 已经逐级给出重规划和修复搜索的作用。
+- **自动修复部分**：不合法修复的部件以表 1 的 C 为完整系统，进度修复的部件以表 1 的 D 为完整系统，数值直接引用表 1，不在本表重复列出。
+  - 表 1 的 A→B→C→D 已经逐级给出重规划、修复搜索和进度修复的作用。
   - 本表只列表 1 看不到的部件。
   - 本表的"− 定向重规划"是在保留修复搜索的前提下去掉重规划，回答"有了修复搜索，重规划是否还必要"，与表 1 的 B − A 是不同的问题。
-- **人审部分**：以 H2 为完整系统，用脚本审阅（固定延迟 2 步、总是采用建议），避免真人差异混入。所以这里测的是机制本身，不是人的价值。表中写作"H2（脚本）"，与表 1 的真人 H2 区分。
+- **人审部分**：以 H 为完整系统，用脚本审阅（固定延迟 2 步、总是采用推荐方案），避免真人差异混入。所以这里测的是机制本身，不是人的价值。表中写作"H（脚本）"，与表 1 的真人 H 区分。运行名中的 `Hscript` 现在代码里叫 `H2script`，实现时改名。
 
 | 组 | 版本 | 去掉或替换了什么 | 对应指标 | 对应指标结果 | 修复生效率 | 钻石步数 | 运行名（`variant`） |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 自动 | − 定向重规划 | 保留修复搜索，重规划轮数 2 → 0 | 进入修复搜索的问题数/局 | | | | `C-no-replan` |
 | 自动 | − 联合检查 | 每个问题单独找方案再合并 | 合并后仍成立的比例、冲突提交数 | | | | 离线：`evaluate_frozen_scopes.py` |
 | 自动 | − 最小范围 | 在可行方案中不按"先修得全、再改得少"选择，改为任取一个（按状态固定选取，可复现） | 平均改动人数、被打断的原计划数 | | | | `C-any-scope` |
-| 人审 | H2（脚本）完整 | 局部等待 + 增量复核 + 精简证据 | — | | | | `H2script` |
-| 人审 | 局部等待 → 全局等待 | 审阅期间所有 Agent 都停下 | 被暂停的 Agent 步数 | | | | `H2script-global-wait` |
-| 人审 | 局部等待 → 不等待 | 审阅期间照常执行，回复后再复核 | 过期回复数、被拒提交数 | | | | `H2script-no-wait` |
-| 人审 | 增量复核 → 完整复核 | 每次都复核全队 | 复核耗时、复核结论是否一致 | | | | `H2script-full-recheck` |
-| 人审 | − 提交前复核 | 回复后不再检查当前状态，直接提交 | 过期修复被提交数、修复生效率 | | | | `H2script-no-recheck` |
+| 自动 | − 锁定执行 | D 的多步进度方案只写进上下文提示，不锁定执行 | 多步完成率、估计误差 | | | | `D-no-commit`（计划） |
+| 开放范围 | 只改当事人 vs 可修复范围 S | 问题快照上，只允许改出问题的 Agent 自己的计划 | 能修好的问题比例 | | — | — | 离线：`evaluate_frozen_scopes.py` 新增"只改当事人"选项（计划） |
+| 人审 | H（脚本）完整 | 局部等待 + 增量复核 + 精简证据 | — | | | | `Hscript` |
+| 人审 | 局部等待 → 全局等待 | 审阅期间所有 Agent 都停下 | 被暂停的 Agent 步数 | | | | `Hscript-global-wait` |
+| 人审 | 局部等待 → 不等待 | 审阅期间照常执行，回复后再复核 | 过期回复数、被拒提交数 | | | | `Hscript-no-wait` |
+| 人审 | 增量复核 → 完整复核 | 每次都复核全队 | 复核耗时、复核结论是否一致 | | | | `Hscript-full-recheck` |
+| 人审 | − 提交前复核 | 回复后不再检查当前状态，直接提交 | 过期修复被提交数、修复生效率 | | | | `Hscript-no-recheck` |
 | 人审 | 精简证据 → 完整证据 | 展示全部相关事实 | 展示的事实组数 | | — | — | 离线：同一局同时记录前后组数 |
 
-- **规模**：在线 7 个版本 × 3 个种子 × 2 次重复，共 42 局。两行离线计算不调用模型。预算紧时重复次数降为 1，共 21 局。
+- **规模**：在线 8 个版本 × 3 个种子 × 2 次重复，共 48 局。三行离线计算不调用模型。预算紧时重复次数降为 1，共 24 局。
 - **证据部件**：脚本审阅只能证明展示的内容变少了。证据是否缩短阅读时间、是否影响判断正确率，需要真人小试，结果只在小试完成后报告。
-- **表 1 的分工**：表 1 已经覆盖"开放哪些 Agent 给人审"（H1 对 H2）这一项，本表不重复。
+- **开放范围**：原表 1 中 H1 对 H2 的比较改为本表的离线统计，用表 1 自动条件保存的问题快照计算。
 - **动作合法性保护**：这是所有条件共用的公平性设置，不作为贡献，不做消融。
 - **如实报告**：一步修复在一局里出现的次数有限，3 个种子下钻石步数的差异可能不显著。部件是否起作用以对应指标为主要依据；若对应指标也没有变化，要写明该部件在当前设置下没有表现出作用。
 
@@ -127,32 +148,34 @@ Crafter 的主要指标是"采到钻石用了多少步"，不是成功率。已�
 
 只跑 Crafter，只改对话模型，其余设置同表 1。主要模型是 Qwen、DeepSeek、Kimi、GLM，另加 GPT 作为国外参照。
 
-基线是条件 A（DAMCS 底座），不是不带 DAMCS 记忆和分工的纯 API。本表要回答的是"本项目加在 DAMCS 之上的机制，包括自动修复 C 和主方法 H2，其作用是否随模型强弱变化"；若以纯 API 为基线，差值中会混入 DAMCS 本身的作用。
+基线是条件 A（DAMCS 底座），不是不带 DAMCS 记忆和分工的纯 API。本表要回答的是"本项目加在 DAMCS 之上的机制，包括自动修复 C、进度修复 D 和主方法 H，其作用是否随模型强弱变化"；若以纯 API 为基线，差值中会混入 DAMCS 本身的作用。
 
 每格只填钻石步数的均值，括号内为标准差。
 
-| 模型 | 档位 | A | B | C | H2 | 每局花费 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Qwen | | | | | | |
-| DeepSeek | | | | | | |
-| Kimi | | | | | | |
-| GLM | | | | | | |
-| GPT | | | | | | |
+| 模型 | 档位 | A | B | C | D | H | 每局花费 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Qwen | | | | | | | |
+| DeepSeek | | | | | | | |
+| Kimi | | | | | | | |
+| GLM | | | | | | | |
+| GPT | | | | | | | |
 
 - **表注**：未采到钻石的局按步数上限 350 计，并注明每个格子中这类局的数量。
 - **怎么读**：
   - C 对 B 看可修复范围 S 单独的作用（核心创新）。
-  - H2 对 C 看真人审阅相对自动修复的增量（主方法）。
+  - D 对 C 看处理进度问题的作用。
+  - H 对 D 看真人审阅相对自动处理的增量（主方法）。
   - A 本身的数值反映模型原本的强弱。
   - 差值由读者从各列直接得到，表中不另列。
-- **正文中要补的一句话**：差值的方向是否在各模型上一致。按种子配对计算（同一种子下 C 减 B、H2 减 C），写明每个模型 3 个种子里有几个变好，例如"5 个模型中 4 个的 C 少于 B，其中 3 个模型 3/3 个种子都变好"。这一信息从均值中看不出来。
-- **放到附表的指标**：问题数/局、修复生效率、人审次数和阅读时间、里程碑数、JSON 重试与报错中断（技术失败率）。弱模型若普遍采不到钻石，在附表中用里程碑数和做出铁镐的步数比较。汇总脚本都会导出这些字段。
-- **H2 用真人审阅**，设置与表 1 的 H2 相同（局部等待、增量复核、精简证据，只在关键时刻问、不设次数上限，一次最多开放 2 个 Agent）。脚本审阅不能代替，因为它总是采纳建议，结果接近 C。
-- **规模**：5 个模型 × 4 个条件 × 3 个种子 × 1 次，共 60 局，其中 H2 的 15 局需要真人审阅。Qwen 一行直接复用表 1 中重复编号为 0 的 A、B、C、H2 局，所以需要新跑 48 局，其中真人审阅 12 局。
+- **正文中要补的一句话**：差值的方向是否在各模型上一致。按种子配对计算（同一种子下 C 减 B、D 减 C、H 减 D），写明每个模型 3 个种子里有几个变好，例如"5 个模型中 4 个的 C 少于 B，其中 3 个模型 3/3 个种子都变好"。这一信息从均值中看不出来。
+- **放到附表的指标**：问题数/局、进度问题数/局、修复生效率、卡住总步数、人审次数和阅读时间、里程碑数、JSON 重试与报错中断（技术失败率）。弱模型若普遍采不到钻石，在附表中用里程碑数和做出铁镐的步数比较。汇总脚本都会导出这些字段。
+- **H 用真人审阅**，设置与表 1 的 H 相同（局部等待、增量复核、精简证据，只在关键时刻问、不设次数上限，不合法问题一次最多开放 2 个 Agent）。脚本审阅不能代替，因为它总是采纳推荐方案，结果接近 D。
+- **规模**：5 个模型 × 5 个条件 × 3 个种子 × 1 次，共 75 局，其中 H 的 15 局需要真人审阅。Qwen 一行直接复用表 1 中重复编号为 0 的 A、B、C、D、H 局，所以需要新跑 60 局，其中真人审阅 12 局。
 - **审阅者分配**：审阅者不能与模型绑定，否则"模型差异"和"审阅者差异"无法区分。按种子分配审阅者，同一个种子的所有模型由同一位审阅者审阅；审阅时尽量不告诉审阅者当前是哪个模型；每位审阅者的模型顺序要轮换，见 [审阅规程](review_protocol_2026-11-18.md)。每局用 `--reviewer_id` 记录审阅者编号。
 - **要检验的猜想**：
   - 弱模型出现问题更多，C − A 和 C − B 的改善应更大。
-  - 人审的增量 H2 − C 也可能随模型变化：弱模型留给人修的问题更多；强模型的自动修复已经足够时，人审的价值变小。
+  - 进度问题可能在各模型上都存在：即使强模型很少写出不合法计划，也可能出现"合法但慢"的分工，所以 D − C 未必随模型变强而变小。
+  - 人审的增量 H − D 也可能随模型变化：弱模型留给人判断的问题更多；强模型的自动处理已经足够时，人审的价值变小。
   - 强模型问题少，机制的作用也小。
   - 所有结果都要如实报告。
 - **措辞**：这是同一套任务上的跨模型对比，不另称新 benchmark。
@@ -184,16 +207,17 @@ python scripts\run_with_model.py --profile qwen
 
 ```powershell
 # Crafter 自动条件
-python scripts\run_experiments.py --model_profiles qwen --conditions A B C --seeds 4 5 6 --repeats 2 --results_dir results\table1_crafter_auto
+python scripts\run_experiments.py --model_profiles qwen --conditions A B C D --seeds 4 5 6 --repeats 2 --results_dir results\table1_crafter_auto
 
 # Crafter 真人审阅：每位审阅者按分到的种子运行，操作和判断标准见 docs\review_protocol_2026-11-18.md
-# 单号审阅者用 --conditions H1 H2，双号审阅者用 --conditions H2 H1
-python scripts\run_experiments.py --model_profiles qwen --conditions H1 H2 --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_crafter_human_R1
+python scripts\run_experiments.py --model_profiles qwen --conditions H --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_crafter_human_R1
 
 # CUBE
-python scripts\run_experiments.py --environment cube --agent_num 3 --step_num 30 --model_profiles qwen --conditions B C --seeds 4 5 6 --repeats 2 --results_dir results\table1_cube_auto
-python scripts\run_experiments.py --environment cube --agent_num 3 --step_num 30 --model_profiles qwen --conditions H2 --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_cube_human_R1
+python scripts\run_experiments.py --environment cube --agent_num 3 --step_num 30 --model_profiles qwen --conditions B C D --seeds 4 5 6 --repeats 2 --results_dir results\table1_cube_auto
+python scripts\run_experiments.py --environment cube --agent_num 3 --step_num 30 --model_profiles qwen --conditions H --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_cube_human_R1
 ```
+
+条件名 D、H 要等进度问题修复实现后才能使用。
 
 ### 表 2
 
@@ -204,14 +228,16 @@ python scripts\run_experiments.py --suite ablation --model_profiles qwen --seeds
 python scripts\evaluate_frozen_scopes.py --input results\table1_crafter_auto --capacities 2 --output results\table2_joint_check.json
 ```
 
+离线的"开放范围"一行同样读取这些问题快照，所用的"只改当事人"选项要等实现后补上命令。
+
 ### 表 3
 
 ```powershell
 # 自动条件
-python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --conditions A B C --seeds 4 5 6 --repeats 1 --results_dir results\table3_auto
+python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --conditions A B C D --seeds 4 5 6 --repeats 1 --results_dir results\table3_auto
 
 # 真人审阅：每位审阅者负责一个种子，审阅该种子下所有模型，审阅页面为 http://127.0.0.1:8765
-python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --conditions H2 --seeds 4 --repeats 1 --reviewer human --reviewer_id R1 --results_dir results\table3_human_R1
+python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --conditions H --seeds 4 --repeats 1 --reviewer human --reviewer_id R1 --results_dir results\table3_human_R1
 ```
 
 ### 单局试跑
@@ -239,7 +265,9 @@ python scripts\run_experiments.py --model_profiles qwen --conditions A B C --see
 
 ## 开跑前要填写和确认的内容
 
-代码部分已经补齐。下面这些需要课题组决定或填写，不能由代码代替：
+0. **先实现进度问题修复**：条件 D、H，以及标为"计划"的字段和消融版本，见 [进度问题修复设计](progress_repair_design_2026-11-18.md) 第 12 节。完成之前不开跑。
+
+下面这些需要课题组决定或填写，不能由代码代替：
 
 1. **型号**：在 `config/model_profiles.json` 中填写 DeepSeek、Kimi、GLM、GPT 的具体型号名，必须是能接收图片的版本，并填写档位（`tier`）。未填型号的配置会在开跑前直接报错。
    - DeepSeek 据第三方资料只有 Flash 档支持图片，单张图片可能有约 384 token 的上限，以官方文档为准。

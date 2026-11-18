@@ -1,10 +1,17 @@
 # 审阅规程
 
-日期：2026-11-18。适用于表 1 的 H1、H2 和表 3 的 H2 真人审阅。所有审阅者按同一份规程操作，否则不同人的结果无法比较。
+日期：2026-11-18（同日修订）。适用于表 1、表 3 中条件 H 的真人审阅。所有审阅者按同一份规程操作，否则不同人的结果无法比较。
+
+> **修订说明**：原 H1、H2 已合并为一个人审条件 H，因此不再需要轮换条件顺序。H 新增了"进度问题"请求（第 6 节）。条件名 H 和进度问题页面要等 [进度问题修复设计](progress_repair_design_2026-11-18.md) 实现后才能使用，在此之前不开始正式审阅。
 
 ## 1. 你在做什么
 
-程序在跑多智能体挖钻石（或推箱子）。当几个 AI 的计划出现协调问题、系统自己又没能解决时，会把一部分计划开放给你修改。你的任务是：在网页上看清问题，选择采用、修改或跳过，并尽快提交。
+程序在跑多智能体挖钻石（或推箱子）。系统会在两类情况下请你判断：
+
+- **不合法问题**：某个 AI 的计划这一步做不成（材料不够、工具不对等），系统自己又没能解决。系统会把一部分计划开放给你修改。
+- **进度问题**：大家的计划都做得成，但团队离下一个阶段明显太慢，例如一个人要走很远去拿东西，而别人一步就能帮上。系统会列出几种分工方案，请你选一个。
+
+你的任务是：在网页上看清问题，做出选择，并尽快提交。
 
 系统只在**关键时刻**问你，不限次数。关键时刻有三种，页面上会告诉你是哪一种：
 
@@ -36,28 +43,21 @@
 正式开始前，每人先跑一局练习，熟悉页面。练习局不计入结果。
 
 ```powershell
-python scripts\run_experiments.py --model_profiles qwen --conditions H2 --seeds 99 --step_num 60 --review_trigger all --reviewer human --reviewer_id R1-practice --results_dir results\practice_R1
+python scripts\run_experiments.py --model_profiles qwen --conditions H --seeds 99 --step_num 60 --review_trigger all --reviewer human --reviewer_id R1-practice --results_dir results\practice_R1
 ```
 
 把 `R1` 换成自己的编号。练习局加了 `--review_trigger all`，遇到任何问题都会问你，这样前 60 步就能练到；正式运行不加这个参数，只在关键时刻问。如果 60 步内仍没有出现审阅请求，再跑一局或把 `--step_num` 加大。
 
 ## 4. 正式运行
 
-把命令里的种子、编号和结果目录换成自己的。
-
-**条件顺序要轮换**，避免"越审越熟练"只让某一个条件受益：
-
-| 审阅者编号 | 表 1 的条件顺序 |
-| --- | --- |
-| 单号（R1、R3…） | `--conditions H1 H2` |
-| 双号（R2、R4…） | `--conditions H2 H1` |
+把命令里的种子、编号和结果目录换成自己的。表 1 只有一个人审条件 H，不需要轮换条件顺序。
 
 ```powershell
-# 表 1，Crafter（单号审阅者示例）
-python scripts\run_experiments.py --model_profiles qwen --conditions H1 H2 --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_crafter_human_R1
+# 表 1，Crafter
+python scripts\run_experiments.py --model_profiles qwen --conditions H --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_crafter_human_R1
 
-# 表 1，CUBE（只有 H2）
-python scripts\run_experiments.py --environment cube --agent_num 3 --step_num 30 --model_profiles qwen --conditions H2 --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_cube_human_R1
+# 表 1，CUBE
+python scripts\run_experiments.py --environment cube --agent_num 3 --step_num 30 --model_profiles qwen --conditions H --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_cube_human_R1
 ```
 
 表 3 的模型顺序也要轮换，按负责人分配的顺序填写 `--model_profiles`。例如：
@@ -69,7 +69,7 @@ python scripts\run_experiments.py --environment cube --agent_num 3 --step_num 30
 | R3 | `kimi gpt deepseek glm` |
 
 ```powershell
-python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --conditions H2 --seeds 4 --repeats 1 --reviewer human --reviewer_id R1 --results_dir results\table3_human_R1
+python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --conditions H --seeds 4 --repeats 1 --reviewer human --reviewer_id R1 --results_dir results\table3_human_R1
 ```
 
 ## 5. 页面设置（每次开跑后都要做）
@@ -81,7 +81,11 @@ python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --condi
 
 ## 6. 收到请求后怎么审
 
-请求到达时会有提示音、桌面通知，页面会自动打开。按下面的顺序看：
+请求到达时会有提示音、桌面通知，页面会自动打开。页面顶部会写明这是**不合法问题**还是**进度问题**，两类问题的审法不同。
+
+### 6.1 不合法问题
+
+按下面的顺序看：
 
 1. **目标**：页面顶部写着哪个 Agent 想做什么没做成，例如"Agent 0: make wood_pickaxe"。
 2. **倒计时**：总共 120 秒。**尽量在 60 秒内提交。**
@@ -89,7 +93,7 @@ python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --condi
 4. **推荐方案**：如果有，已经默认选在下拉框里。
 5. **判断依据**：各 Agent 的背包、位置和周围的格子，需要时展开看。
 
-### 判断标准
+#### 判断标准
 
 按下面的顺序判断，所有人用同一套标准，不因为条件不同而改变。
 
@@ -121,6 +125,41 @@ python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --condi
 - **不要为了"用掉这次机会"而修改。** 跳过也是有效的判断。
 - 提交后无法撤回。
 
+### 6.2 进度问题
+
+页面会显示：
+
+- **里程碑**：团队下一个要达成的阶段，例如"做石镐"；
+- **当前计划**：按现在的计划，估计还要多少步；
+- **方案列表**：每个方案写明改了谁、改成什么、估计多少步，以及这个估计是"精确"（一步内能确定做成）还是"估计"（要走路，可能有偏差）。排第一的方案已经默认选中。
+
+你只能做三种操作：
+
+- 选列表里的一个方案；
+- 选"不改"，保持当前计划；
+- 跳过，系统会按排第一的方案处理。
+
+不能自由修改计划。
+
+**判断标准。** 系统的估计只算了走路和动作的步数，没有考虑下面这些情况。你的作用就是补上这些信息：
+
+- 路上有怪物、岩浆，或者明显走不通；
+- 某个 Agent 生命值、饥饿、口渴、体力很低；
+- 原计划的 Agent 其实马上就要做成了；
+- 被派走的 Agent 手里的工具或材料马上就要自己用。
+
+| 情况 | 操作 |
+| --- | --- |
+| 排第一的方案没有上述问题 | 直接提交默认选中的方案 |
+| 排第一的方案有上述问题，另一个方案没有 | 改选那个方案再提交 |
+| 所有方案都有问题，或原计划马上就能完成 | 选"不改" |
+| 看不懂、拿不准 | 跳过，不要猜着选 |
+
+补充说明：
+
+- 估计步数接近的方案（相差几步以内）优先选"精确"的那个。
+- 不要因为"估计"两个字就否定一个方案，只在你看到具体问题时才换。
+
 ## 7. 不要做的事
 
 - 不要和其他审阅者讨论具体某一局的情况，也不要互相看对方的屏幕。
@@ -146,6 +185,6 @@ python scripts\run_experiments.py --model_profiles deepseek kimi glm gpt --condi
 
 | 审阅者编号 | 日期 | 开始时间 | 结束时间 | 表 | 环境 | 模型 | 条件 | 种子 | 重复编号 | 异常情况 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| R1 | 2026-11-20 | 14:05 | 15:40 | 表 1 | Crafter | qwen | H1 | 4 | 0 | 无 |
+| R1 | 2026-11-20 | 14:05 | 15:40 | 表 1 | Crafter | qwen | H | 4 | 0 | 无 |
 
-结果目录名里有条件、种子和重复编号，例如 `qwen_H1_seed4_r0_...`，可以直接照抄。阅读时间、提交内容等由程序自动记录，不需要手填。
+结果目录名里有条件、种子和重复编号，例如 `qwen_H_seed4_r0_...`，可以直接照抄。阅读时间、提交内容等由程序自动记录，不需要手填。
