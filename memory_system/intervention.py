@@ -66,8 +66,8 @@ def stall_window(stall_steps, stall_fraction, step_limit):
     return FALLBACK_STALL_STEPS
 
 # Progress problems (legal plans, clearly slow team milestone). ``off``: not checked;
-# ``log``: checked and recorded only (conditions A, B, C); ``auto``: the first option is
-# applied (D); ``human``: a person chooses at critical moments, otherwise as ``auto`` (H).
+# ``log``: checked and recorded only (conditions A, B); ``auto``: the first option is
+# applied (C); ``human``: a person chooses at critical moments, otherwise as ``auto`` (H).
 PROGRESS_MODES = ("off", "log", "auto", "human")
 # "Clearly slow" by default: this share of the episode length (10 of 350 steps), at least 2.
 DEFAULT_SLOW_FRACTION = 0.03
@@ -734,7 +734,7 @@ class InterventionController:
         else:
             status, reply = ("timeout", "timeout") if decision == "timeout" else ("reject", "skip")
         if status in ("stale_option", "timeout", "reject"):
-            # As in D: the best option now, if the milestone is still clearly slow.
+            # As in condition C: the best option now, if the milestone is still clearly slow.
             for problem in self._progress_analysis(agents, observations, responses, current,
                                                    only=[milestone])["problems"]:
                 if problem["options"]:

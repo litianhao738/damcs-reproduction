@@ -261,10 +261,11 @@ The controller in `memory_system/intervention.py` keeps edit permissions S, revi
 | Condition | Behavior |
 | --- | --- |
 | A | Autonomous planning and the common execution guard; progress problems are only recorded |
-| B | A plus at most two targeted replanning rounds |
-| C | B plus verified scope search and automatic execution (legality repair) |
-| D | C plus automatic progress repair: the first-ranked option is applied |
-| H | D with human review at critical moments, for both kinds of problem; otherwise as D |
+| B | A plus legality repair: at most two targeted replanning rounds, then verified scope search and automatic execution for plans that are still illegal |
+| C | B plus automatic progress repair: the first-ranked option is applied |
+| H | C with human review at critical moments, for both kinds of problem; otherwise as C |
+
+The framework has three modules on top of the DAMCS base: legality repair, progress repair and human review at critical moments. The verified repair scope S is a fallback inside legality repair, not a module of its own.
 
 A **progress problem** is a step where every plan is legal, but the team's next milestone is clearly slow.
 
@@ -277,22 +278,23 @@ Details are in [docs/progress_repair_design_2026-11-18.md](docs/progress_repair_
 Renamed conditions:
 
 - **2026-11-17:** the related-group condition (then H1) was removed, and the problem-owner condition was renamed from H0 to H1.
-- **2026-11-18:** H1 and H2 were merged into H, which keeps H2's verified-scope review, and D was added. Older results named H2 correspond to H without progress repair. The owner-versus-scope question is answered offline by `scripts/evaluate_frozen_scopes.py` (`strategies.owner` vs `strategies.verified`).
+- **2026-11-18, first change:** H1 and H2 were merged into H, which keeps H2's verified-scope review, and D (automatic progress repair) was added. Older results named H2 correspond to H without progress repair.
+- **2026-11-18, second change:** the old B (replanning only) and the old C (replanning plus scope S) were merged into today's B, which keeps the old C settings, and the old D was renamed C. In pilot runs S never applied a repair in Crafter, so the two behaved the same. Older results named C correspond to today's B, and D to today's C. The owner-versus-scope comparison (`scripts/evaluate_frozen_scopes.py`) is now optional supplementary material.
 
 All conditions use submitted observations and the same environment rules. The candidate domain is shared; the selected edit scope controls which agents and fields the reviewer can change.
 
 ```powershell
-# Automatic scope execution
+# Automatic legality and progress repair
 python run.py --condition C --agent_num 6 --step_num 350 --seed 4 --results_dir results\auto --no_plot
 
 # Open the printed localhost URL to approve, preview, edit or skip a request
 python run.py --condition H --review_max_agents 2 --pause_mode local --results_dir results\human --no_plot
 
 # Preview a paired-seed matrix without calling models
-python scripts\run_experiments.py --conditions A B C D H --seeds 4 5 6 --dry_run
+python scripts\run_experiments.py --conditions A B C H --seeds 4 5 6 --dry_run
 
 # A scripted reviewer checks the pipeline; its replies are labelled as scripted
-python scripts\run_experiments.py --conditions C D H --seeds 4 --step_num 10 --reviewer scripted --results_dir results\pipeline
+python scripts\run_experiments.py --conditions B C H --seeds 4 --step_num 10 --reviewer scripted --results_dir results\pipeline
 
 # Offline comparison on identical captured failure snapshots
 python scripts\evaluate_frozen_scopes.py --input results\pipeline
@@ -304,15 +306,15 @@ Crafter compact evidence removes inventory/view groups only when the declared on
 
 Each episode saves `config.json` (seed, condition, source hashes and model names), `model_usage.json`, `events.jsonl`, `intervention_summary.json`, immutable requests under `reviews/`, and replayable submitted-state snapshots under `failures/`. Logs distinguish approval, commit, actual target recovery and final task success. Batch runs export `episodes.json` and `episodes.csv`, retaining failed episodes and process exit codes. Use `--summarize_only` to regenerate the exports. Crafter episodes save their whole running state to `checkpoint.pkl` every `--checkpoint_every` steps (default 5); rerunning the same command with `--resume` skips finished episodes, continues interrupted Crafter episodes from their checkpoint, and reruns the rest, keeping failed attempts as `<dir>.failedN`. A checkpoint written by different code is refused.
 
-The planned result tables, their commands and the exported fields are in [docs/experiment_tables_2026-11-17.md](docs/experiment_tables_2026-11-17.md). `--suite ablation` runs table 2, removing one module at a time from D: no replanning (`D-no-replan`), no repair scope S (`D-no-scope`, the search still runs and is logged), and the language model switched off (`D-no-llm`, `--agent_llm off`: every agent gives an idle plan and no model is called), which shows what the mechanisms do alone. `--suite appendix` runs the design checks inside modules: `C-any-scope`, `D-no-commit`, and scripted-review H in full, with global waiting, and without the pre-commit recheck. All three tables use MA-Crafter only; CUBE remains available for an appendix. Other batch sweeps: `--suite capacity --conditions C H`, `--suite evidence --conditions H`, and `--suite waiting --conditions H`. Frozen-snapshot evaluation also compares individual problem witnesses with joint consistency; it is an offline diagnostic ablation, not a full-task performance claim. Use an episode as the statistical unit and record reviewer identities separately for a real human study.
+The planned result tables, their commands and the exported fields are in [docs/experiment_tables_2026-11-17.md](docs/experiment_tables_2026-11-17.md). `--suite ablation` runs table 2, removing one module at a time from C: no legality repair (`C-no-legality`: neither replanning nor scope S; illegal plans are only recorded, as in A) and the language model switched off (`C-no-llm`, `--agent_llm off`: every agent gives an idle plan and no model is called), which shows what the mechanisms do alone. `--suite appendix` runs the design checks inside modules: `C-no-commit`, and scripted-review H in full, with global waiting, and without the pre-commit recheck. Batch exports also count illegal plans from `coordination.jsonl` (`illegal_plan_steps`, `illegal_plans_first`, `illegal_plans_after_replan`). All three tables use MA-Crafter only; CUBE remains available for an appendix. Other batch sweeps: `--suite capacity --conditions B H`, `--suite evidence --conditions H`, and `--suite waiting --conditions H`. Frozen-snapshot evaluation also compares individual problem witnesses with joint consistency; it is an offline diagnostic ablation, not a full-task performance claim. Use an episode as the statistical unit and record reviewer identities separately for a real human study.
 
 ### CUBE transfer check
 
 `third_party/coop2_cube` contains the actual [COOP2 environment source](https://github.com/HappyEureka/coop2-llm-mas), pinned in `UPSTREAM.json`, with its MIT license. The package entry point is trimmed; the environment and task rules are unchanged. The adapter reconstructs its transition model from public agent/block observations and checks simultaneous force, collision and delivery using those rules.
 
 ```powershell
-python run_cube.py --condition C --agent_num 3 --grid_size 9 --block_specs 2:1 --step_num 30 --results_dir results\cube --no_plot
-python scripts\run_experiments.py --environment cube --conditions A B C D H --agent_num 3 --grid_size 9 --block_specs 2:1 --seeds 4 5 6 --step_num 30 --dry_run
+python run_cube.py --condition B --agent_num 3 --grid_size 9 --block_specs 2:1 --step_num 30 --results_dir results\cube --no_plot
+python scripts\run_experiments.py --environment cube --conditions A B C H --agent_num 3 --grid_size 9 --block_specs 2:1 --seeds 4 5 6 --step_num 30 --dry_run
 ```
 
 The CUBE planner is an AgentScope agent with a small action schema. It uses the common bounded review/commit protocol and CUBE-specific push diagnostics; it does not import Crafter's crafting goals. Neither environment adapter promises general multi-step planning or future unobserved outcomes.

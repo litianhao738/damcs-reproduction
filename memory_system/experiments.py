@@ -10,18 +10,22 @@ from .intervention import write_json
 
 
 # (coordination_mode, repair_rounds, scope_mode, review_strategy, progress_mode).
-# Each condition adds one thing to the previous one: replanning (B), verified legality
-# repair (C), automatic progress repair for legal but slow plans (D), and a person
-# choosing at critical moments (H). A, B and C record progress problems without acting.
-# History: on 2026-11-18 the problem-owner review (H1) and the verified-scope review (H2)
-# were merged into H, which keeps H2's review interface; the owner-versus-scope question
-# moved to an offline comparison (scripts/evaluate_frozen_scopes.py). Older results
-# named H2 correspond to H without progress repair.
+# Each condition adds one module to the previous one: legality repair (B: up to two rounds
+# of replanning, with the verified repair scope S as a fallback when a plan is still
+# illegal afterwards), automatic progress repair for legal but slow plans (C), and a person
+# choosing at critical moments (H). A and B record progress problems without acting.
+# History, all on 2026-11-18:
+# - The problem-owner review (H1) and the verified-scope review (H2) were merged into H,
+#   which keeps H2's review interface. Older results named H2 are H without progress repair.
+# - The conditions were then A, B (replanning only), C (B + S), D (C + progress repair), H.
+#   In pilot runs S never applied a repair in Crafter, so B and C behaved the same. They
+#   were merged into today's B (the old C settings), and the old D was renamed C. Results
+#   recorded before this change under C are today's B, and under D today's C. Every run's
+#   config.json also stores the five settings above.
 CONDITIONS = {
     'A': ('diagnose', 0, 'off', 'verified', 'log'),
-    'B': ('repair', 2, 'off', 'verified', 'log'),
-    'C': ('repair', 2, 'auto', 'verified', 'log'),
-    'D': ('repair', 2, 'auto', 'verified', 'auto'),
+    'B': ('repair', 2, 'auto', 'verified', 'log'),
+    'C': ('repair', 2, 'auto', 'verified', 'auto'),
     'H': ('repair', 2, 'human', 'verified', 'human'),
 }
 

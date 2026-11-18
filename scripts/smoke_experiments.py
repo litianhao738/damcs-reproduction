@@ -27,10 +27,10 @@ class ExperimentChecks(unittest.TestCase):
     def test_paired_seed_matrix_uses_identical_shared_settings(self):
         args = get_parser().parse_args(['--seeds', '4', '5', '--repeats', '2', '--results_dir', self.output.name])
         rows = build_matrix(args)
-        self.assertEqual(len(rows), 20)
-        self.assertEqual(len({row['run_id'] for row in rows}), 20)
-        self.assertEqual({row['condition'] for row in rows}, {'A', 'B', 'C', 'D', 'H'})
-        for condition in ('A', 'B', 'C', 'D', 'H'):
+        self.assertEqual(len(rows), 16)
+        self.assertEqual(len({row['run_id'] for row in rows}), 16)
+        self.assertEqual({row['condition'] for row in rows}, {'A', 'B', 'C', 'H'})
+        for condition in ('A', 'B', 'C', 'H'):
             self.assertEqual({(row['seed'], row['repeat_id']) for row in rows if row['condition'] == condition},
                              {(4, 0), (4, 1), (5, 0), (5, 1)})
 
@@ -40,36 +40,35 @@ class ExperimentChecks(unittest.TestCase):
         self.assertEqual({(cmd[cmd.index('--pause_mode') + 1], cmd[cmd.index('--revalidation') + 1]) for cmd in commands},
                          {('global', 'full'), ('none', 'full'), ('local', 'incremental')})
 
-    def test_ablation_suite_removes_one_module_from_d(self):
+    def test_ablation_suite_removes_one_module_from_c(self):
         args = get_parser().parse_args(['--suite', 'ablation', '--seeds', '4', '--results_dir', self.output.name])
         rows = {row['variant']: row['command'] for row in build_matrix(args)}
-        self.assertEqual(set(rows), {'D-no-replan', 'D-no-scope', 'D-no-llm'})
+        self.assertEqual(set(rows), {'C-no-legality', 'C-no-llm'})
 
         def flag(command, name):
             return command[command.index(name) + 1]
 
         def settings(command):
-            return tuple(flag(command, name) for name in ('--repair_rounds', '--scope_mode', '--progress_mode'))
+            return tuple(flag(command, name) for name in ('--coordination_mode', '--repair_rounds', '--scope_mode',
+                                                          '--progress_mode'))
 
-        # D itself: repair, 2 rounds, automatic legality and progress repair, model on.
-        self.assertEqual(settings(rows['D-no-replan']), ('0', 'auto', 'auto'))
-        self.assertEqual(settings(rows['D-no-scope']), ('2', 'suggest', 'auto'))
-        self.assertEqual((flag(rows['D-no-llm'], '--condition'), flag(rows['D-no-llm'], '--agent_llm')), ('D', 'off'))
-        self.assertTrue(all(flag(rows[name], '--agent_llm') == 'on' for name in ('D-no-replan', 'D-no-scope')))
-        self.assertTrue(rows['D-no-llm'][rows['D-no-llm'].index('--results_dir') + 1].endswith('nollm'))
+        # C itself: repair, 2 rounds, automatic legality and progress repair, model on. Without
+        # legality repair, illegal plans are only recorded (as in A) and progress repair stays.
+        self.assertEqual(settings(rows['C-no-legality']), ('diagnose', '0', 'off', 'auto'))
+        self.assertEqual(flag(rows['C-no-legality'], '--agent_llm'), 'on')
+        self.assertEqual((flag(rows['C-no-llm'], '--condition'), flag(rows['C-no-llm'], '--agent_llm')), ('C', 'off'))
+        self.assertTrue(rows['C-no-llm'][rows['C-no-llm'].index('--results_dir') + 1].endswith('nollm'))
 
     def test_appendix_suite_changes_one_design_choice_per_row(self):
         args = get_parser().parse_args(['--suite', 'appendix', '--seeds', '4', '--results_dir', self.output.name])
         rows = {row['variant']: row['command'] for row in build_matrix(args)}
-        self.assertEqual(set(rows), {'C-any-scope', 'D-no-commit', 'Hscript', 'Hscript-global-wait',
-                                     'Hscript-no-recheck'})
+        self.assertEqual(set(rows), {'C-no-commit', 'Hscript', 'Hscript-global-wait', 'Hscript-no-recheck'})
 
         def flag(command, name):
             return command[command.index(name) + 1]
 
-        self.assertEqual(flag(rows['C-any-scope'], '--scope_selection'), 'any')
-        self.assertEqual((flag(rows['D-no-commit'], '--condition'), flag(rows['D-no-commit'], '--progress_commit')),
-                         ('D', 'off'))
+        self.assertEqual((flag(rows['C-no-commit'], '--condition'), flag(rows['C-no-commit'], '--progress_commit')),
+                         ('C', 'off'))
         base = rows['Hscript']
         self.assertEqual((flag(base, '--reviewer'), flag(base, '--pause_mode'), flag(base, '--revalidation'),
                           flag(base, '--evidence_mode')), ('scripted', 'local', 'incremental', 'compact'))
@@ -108,7 +107,23 @@ class ExperimentChecks(unittest.TestCase):
             {'event': 'review_resolved', 'status': 'stale_plan'},
         ]
         (self.directory / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)) + '\n', encoding='utf-8')
+
+        def check(agent_id, status, immediate=True):
+            return {'agent_id': agent_id, 'status': status, 'immediate': immediate}
+
+        coordination = [
+            # Two agents illegal at first; replanning fixes agent 1, agent 2 stays illegal.
+            {'step': 1, 'scope_analysis': None, 'rounds': [
+                {'checks': [check(1, 'violated'), check(2, 'violated'), check(3, 'violated', immediate=False)]},
+                {'checks': [check(2, 'violated'), check(1, 'satisfied')]}]},
+            # Only a future (not immediate) violation: not an illegal plan this step.
+            {'step': 2, 'scope_analysis': None, 'rounds': [{'checks': [check(4, 'violated', immediate=False)]}]},
+        ]
+        (self.directory / 'coordination.jsonl').write_text('\n'.join(map(json.dumps, coordination)) + '\n',
+                                                          encoding='utf-8')
         row = summarize_run(self.directory, step_limit=350)
+        self.assertEqual((row['illegal_plan_steps'], row['illegal_plans_first'], row['illegal_plans_after_replan']),
+                         (1, 2, 1))
         self.assertEqual((row['milestones_reached'], row['step_place_furnace']), (8, 129.0))
         self.assertIsNone(row['diamond_step'])
         self.assertTrue(row['diamond_censored'])
@@ -137,9 +152,8 @@ class ExperimentChecks(unittest.TestCase):
         self.assertFalse(Path(failed['directory']).exists())
 
     def test_condition_presets_and_config_capture_source_without_credentials(self):
-        presets = {'A': ('diagnose', 0, 'off', 'verified', 'log'), 'B': ('repair', 2, 'off', 'verified', 'log'),
-                   'C': ('repair', 2, 'auto', 'verified', 'log'), 'D': ('repair', 2, 'auto', 'verified', 'auto'),
-                   'H': ('repair', 2, 'human', 'verified', 'human')}
+        presets = {'A': ('diagnose', 0, 'off', 'verified', 'log'), 'B': ('repair', 2, 'auto', 'verified', 'log'),
+                   'C': ('repair', 2, 'auto', 'verified', 'auto'), 'H': ('repair', 2, 'human', 'verified', 'human')}
         for condition, expected in presets.items():
             args = get_arg_parser().parse_args(['--condition', condition])
             apply_condition(args)
@@ -156,6 +170,8 @@ class ExperimentChecks(unittest.TestCase):
         write_json(self.directory / 'intervention_summary.json', {
             'task_success': False, 'total_steps': 20,
             'outcomes': [{'source': 'human', 'recovered': True}, {'source': 'auto', 'recovered': False}],
+            'progress_exact_commits': 1, 'progress_exact_success': 1, 'progress_tasks': 3,
+            'progress_tasks_completed': 2,
         })
         (self.directory / 'events.jsonl').write_text(json.dumps({
             'event': 'review_resolved', 'status': 'accepted', 'provider': 'scripted',
@@ -164,6 +180,8 @@ class ExperimentChecks(unittest.TestCase):
         self.assertFalse(row['task_success'])
         self.assertEqual(row['real_human_replies'], 0)
         self.assertEqual((row['scripted_replies'], row['recoveries'], row['recovery_attempts']), (1, 1, 2))
+        # Legality and progress repairs together: (1 + 1 + 2) of (2 + 1 + 3).
+        self.assertAlmostEqual(row['repair_success_rate'], 4 / 6)
         export_rows(self.directory, [row, {'completed': False, 'exit_code': 1}])
         rows = json.loads((self.directory / 'episodes.json').read_text(encoding='utf-8'))
         self.assertEqual(len(rows), 2)

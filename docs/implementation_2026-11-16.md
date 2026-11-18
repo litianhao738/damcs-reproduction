@@ -107,24 +107,24 @@ python run.py --condition H --agent_num 6 --step_num 350 --review_max_agents 2 -
 
 ## 4. 对比与消融入口
 
-正式要跑的三张表（主实验、部件消融、跨模型对比）及其统一设置、指标和运行前待办，见 [实验表设计](experiment_tables_2026-11-17.md)。2026-11-18 起表格条件改为 A、B、C、D、H（新增处理"合法但慢"计划的 D，H1、H2 合并为 H），设计见 [进度问题修复设计](progress_repair_design_2026-11-18.md)，实现见下面第 4.1 节。三张表都只跑 MA-Crafter；CUBE 的代码保留，可作附录，2026-11-18 起不进表格。2026-11-17 起补齐了运行三张表所需的部分：任意 OpenAI 兼容接口与命名模型配置（`config/model_profiles.json`、`scripts/run_with_model.py`）、独立的 Embedding 配置、表 2 的消融套件（`--suite ablation`，2026-11-18 起为从 D 逐个去掉模块：`D-no-replan`、`D-no-scope`、`D-no-llm`；模块内部的设计检验在 `--suite appendix`：`C-any-scope`、`D-no-commit`、`Hscript`、`Hscript-global-wait`、`Hscript-no-recheck`）。`--agent_llm off` 让所有 Agent 一律给出 noop 计划，不调用对话模型和 Embedding，用于"只靠机制"的对照以及钻石步数、改动人数和费用等汇总字段。
+正式要跑的三张表（主实验、部件消融、跨模型对比）及其统一设置、指标和运行前待办，见 [实验表设计](experiment_tables_2026-11-17.md)。2026-11-18 起表格条件为 A、B、C、H（B 为合法性修复，C 在其上自动处理"合法但慢"的计划，H 为 C 的人审版；编号变更见下文），设计见 [进度问题修复设计](progress_repair_design_2026-11-18.md)，实现见下面第 4.1 节。三张表都只跑 MA-Crafter；CUBE 的代码保留，可作附录，2026-11-18 起不进表格。2026-11-17 起补齐了运行三张表所需的部分：任意 OpenAI 兼容接口与命名模型配置（`config/model_profiles.json`、`scripts/run_with_model.py`）、独立的 Embedding 配置、表 2 的消融套件（`--suite ablation`，从 C 逐个去掉模块：`C-no-legality`、`C-no-llm`；模块内部的设计检验在 `--suite appendix`：`C-no-commit`、`Hscript`、`Hscript-global-wait`、`Hscript-no-recheck`）。`--agent_llm off` 让所有 Agent 一律给出 noop 计划，不调用对话模型和 Embedding，用于"只靠机制"的对照以及钻石步数、改动人数和费用等汇总字段。
 
 | 条件 | 最终行为 | `--progress_mode` |
 | --- | --- | --- |
 | A | 自主规划，统一动作合法性保护 | `log`：只记录进度问题 |
-| B | A + 最多两轮定向重规划 | `log` |
-| C | B + 可修复候选自动选择、提交与执行 | `log` |
-| D | C + 进度问题自动修复（采用排第一的方案） | `auto` |
-| H | D 的人审版：不合法问题和进度问题在关键时刻都问人，其余同 D | `human` |
+| B | A + 合法性修复：最多两轮定向重规划，仍不合法时由可修复范围 S 自动选择、提交与执行 | `log` |
+| C | B + 进度问题自动修复（采用排第一的方案） | `auto` |
+| H | C 的人审版：不合法问题和进度问题在关键时刻都问人，其余同 C | `human` |
 
-条件定义在 `memory_system/experiments.py` 的 `CONDITIONS`。H 的不合法问题人审沿用原 H2：开放可修复范围，字段收缩到所选见证的实际修改字段。`--review_strategy owner`（原 H1 的"开放出问题的 Agent"）仍可用 `--condition custom` 运行，并用于离线对比，但不再是表格条件。
+条件定义在 `memory_system/experiments.py` 的 `CONDITIONS`。H 的不合法问题人审沿用原 H2：开放可修复范围，字段收缩到所选见证的实际修改字段。`--review_strategy owner`（原 H1 的"开放出问题的 Agent"）仍可用 `--condition custom` 运行，但不再是表格条件。只重规划、不用 S 的设置（第二次变更前的 B）也可以用 `--condition custom --coordination_mode repair --repair_rounds 2 --scope_mode off --progress_mode log` 运行。
 
 编号变更：
 
 - 2026-11-17：旧方案中覆盖完整关联组、开放全部字段的结构参照（当时叫 H1）已删除，因为它允许人在较大范围内自由修改，结果难以量化；原来的 H0 改名为 H1。
-- 2026-11-18：H1、H2 合并为 H，新增 D。旧结果中的 H2 相当于没有进度修复的 H；H1 的比较改为离线统计（`scripts/evaluate_frozen_scopes.py` 输出中的 `strategies.owner` 对 `strategies.verified`）。
+- 2026-11-18 第一次：H1、H2 合并为 H，新增自动进度修复的 D。旧结果中的 H2 相当于没有进度修复的 H。
+- 2026-11-18 第二次：原 B（只重规划）和原 C（重规划 + S）合并为现在的 B，原 D 改名为 C。预试中 S 一次修复都没做过（原 C 的 149 次分析都没有可修目标；qwen3.8-max 关思考的 H2 重跑中 145 次无目标、4 次无解），原 B 与原 C 行为相同。S 留在代码里，作为合法性修复内部的兜底，不再单独算模块。旧结果中的 C 即现在的 B，D 即现在的 C。
 
-### 4.1 进度问题修复（D、H）
+### 4.1 进度问题修复（C、H）
 
 设计理由见 [进度问题修复设计](progress_repair_design_2026-11-18.md)。代码分布：
 
@@ -139,7 +139,7 @@ python run.py --condition H --agent_num 6 --step_num 350 --review_max_agents 2 -
    - 解除锁定的条件：里程碑已达成（谁达成都算）、任务完成、走不通、睡着、生命值 ≤ 3、超出步数上限。
    - 解除时在该 Agent 的上下文里写明原因。
    - 任务一旦达成里程碑，环境步结束后就立即解除。
-2. **不合法问题照旧处理。** B 用重规划，C、D、H 用可修复范围的修复。
+2. **不合法问题照旧处理。** B、C、H 先重规划，仍不合法时由可修复范围 S 修复（H 在关键时刻问人）。
 3. **检查进度问题。** 在不合法修复之后的计划上，逐个检查"下一个里程碑"（尚未达成、前提已达成的阶段）。
    - **当前估计：** 找当前目标就是该里程碑的 Agent（模型回复里的 `goal.current_goal`）。没有的话，看相关目标，例如"采木头"之于"放工作台"。按它自己的物品和本步计划收到的东西，估计它独自完成需要多少步。
    - **候选方案：** 每个可改动的 Agent 都试一次当执行者，模板是补给、换人做、改派采集；制作类里程碑再加"就地建"。执行者缺的材料先找队友远程送；送不了的，由执行者自己或一个队友去采。
@@ -151,11 +151,11 @@ python run.py --condition H --agent_num 6 --step_num 350 --review_max_agents 2 -
    - **算作进度问题：** 有精确方案而当前计划还要 ≥ 2 步；或者最好的方案比当前少 ≥ Δ 步。Δ 由 `--slow_margin` 设置，默认是步数上限的 3%，至少 2，350 步时为 10 步。
    - **估不出时：** 团队卡住、但一个方案都估不出来，记为 `unknown`。这类问题只记录、不问人，因为没有可选的方案。
    - **排序：** 精确方案优先；其次按"代价 = 估计步数 + Δ × 改动人数"，即每多改一个人，相当于多花 Δ 步；再按改动人数、估计步数。
-4. **D：** 对每个问题采用排第一的方案，同一步内同一个 Agent 不会被两个方案使用。
+4. **C：** 对每个问题采用排第一的方案，同一步内同一个 Agent 不会被两个方案使用。
    - 精确方案作为当步的计划修改提交。
    - 多步方案变成锁定任务，步数上限 = 估计步数 × 1.5 + 3。
    - 消融 `--progress_commit off`：多步方案只写进上下文，不锁定。
-5. **H：** 信号响了（`choice`：多个方案改的 Agent 不同；`stalled`：团队卡住）且不在冷却期时，发出 `kind: progress` 的请求；否则同 D。人可以：
+5. **H：** 信号响了（`choice`：多个方案改的 Agent 不同；`stalled`：团队卡住）且不在冷却期时，发出 `kind: progress` 的请求；否则同 C。人可以：
    - 选列表里的一个方案；
    - 选"不改"：该里程碑 `--review_cooldown` 步内不再处理；
    - 跳过：按排第一的方案处理。超时同跳过。
@@ -186,21 +186,22 @@ python run.py --condition H --agent_num 6 --step_num 350 --review_max_agents 2 -
 | `committed_agent_steps` | 锁定执行、没有调用 LLM 的 Agent 步数 |
 | `requests_legal`、`requests_progress` | 两类问题各自问人的次数 |
 
-`run_experiments.py` 把这些字段汇总进 `episodes.csv`，并另算估计误差的均值和中位数、精确方案生效率、任务完成率。
+`run_experiments.py` 把这些字段汇总进 `episodes.csv`，并另算估计误差的均值和中位数、精确方案生效率、任务完成率，以及合法性修复与进度修复合计的修复生效率（`repair_success_rate`）。它还从 `coordination.jsonl` 统计非法计划：出现非法计划的步数（`illegal_plan_steps`）、首轮非法计划数（`illegal_plans_first`）、重规划之后仍不合法的计划数（`illegal_plans_after_replan`）。
 
 **验证（2026-11-18）**
 
-离线测试 `scripts/smoke_progress.py` 共 15 项，全套 138 项全部通过。
+离线测试 `scripts/smoke_progress.py` 共 16 项，全套 140 项全部通过。
 
-离线端到端检查（不调用模型，所有 Agent 的 LLM 回复一律是 noop）：
+离线端到端检查（不调用模型，所有 Agent 的 LLM 回复一律是 noop）。下表用当前编号，检查时的编号是 C → B、D → C：
 
 | 环境 | 设置 | 结果 |
 | --- | --- | --- |
-| Crafter | C（只记录） | 一个里程碑都没完成 |
-| Crafter | D | 第 100 步采到钻石；10 次进度修复，13 个锁定任务全部完成，估计误差 −1 到 2 步 |
+| Crafter | B（只记录进度问题） | 一个里程碑都没完成 |
+| Crafter | C | 第 100 步采到钻石；10 次进度修复，13 个锁定任务全部完成，估计误差 −1 到 2 步 |
+| Crafter | `C-no-legality`（不重规划、不用 S，进度修复照常），经 `run.py` 完整运行 | 第 100 步采到钻石；10 次进度修复，13 个锁定任务全部完成，没有任何模型调用 |
 | Crafter | H（脚本审阅：延迟 2 步，总是采纳推荐） | 问了 10 次（每个进度问题都触发了 `choice`），第 110 步采到钻石 |
-| CUBE | C | 5 个种子全部 0 分 |
-| CUBE | D | 种子 5、6、7、8 分别得 5、3、2、2 分；种子 4 两个箱子互相挡住，只向右推无解，得 0 分 |
+| CUBE | B | 5 个种子全部 0 分 |
+| CUBE | C | 种子 5、6、7、8 分别得 5、3、2、2 分；种子 4 两个箱子互相挡住，只向右推无解，得 0 分 |
 
 两组设置：
 
@@ -209,17 +210,17 @@ python run.py --condition H --agent_num 6 --step_num 350 --review_max_agents 2 -
 
 **解读时要注意：**
 
-- **D 本身就是一个规划器。** LLM 什么都不做时，D 也能独自走完钻石链。也就是说，进度修复本身就是一个基于合成配方和整张地图的规划器。D − C 里会包含这个规划器自身的作用，不只是"修复 LLM 的计划"。正式实验应报告锁定步数占全部 Agent 步数的比例。可以考虑加一组"D，LLM 关闭"的零花费对照，这一组尚未加入表格。
+- **C 本身就是一个规划器。** LLM 什么都不做时，C 也能独自走完钻石链。也就是说，进度修复本身就是一个基于合成配方和整张地图的规划器。C − B 里会包含这个规划器自身的作用，不只是"修复 LLM 的计划"。正式实验应报告锁定步数占全部 Agent 步数的比例；表 2 的"w/o LLM"（`C-no-llm`）就是为此加的零花费对照。
 - **H 可能问人很多。** H 在进度问题上几乎每次都会因为 `choice` 而问人，问人次数需要按类型报告。
 
 每局配置记录种子、重复编号、模型名称、Git 提交与当前源码 SHA256。正式条件都使用相同动作保护；兼容 API 中旧的诊断模式语义不用于区分保护强弱。
 
 ```powershell
 # 先检查运行矩阵，不调用模型
-python scripts\run_experiments.py --conditions A B C D H --seeds 4 5 6 --repeats 2 --dry_run --results_dir results\main_matrix
+python scripts\run_experiments.py --conditions A B C H --seeds 4 5 6 --repeats 2 --dry_run --results_dir results\main_matrix
 
 # 去掉 --dry_run 后，按矩阵顺序运行并保存每局结果
-python scripts\run_experiments.py --conditions C H --seeds 4 5 6 --suite capacity --reviewer scripted --results_dir results\capacity
+python scripts\run_experiments.py --conditions B H --seeds 4 5 6 --suite capacity --reviewer scripted --results_dir results\capacity
 python scripts\run_experiments.py --conditions H --seeds 4 5 6 --suite evidence --results_dir results\evidence
 python scripts\run_experiments.py --conditions H --seeds 4 5 6 --suite waiting --results_dir results\waiting
 
@@ -248,7 +249,7 @@ python scripts\evaluate_frozen_scopes.py --input results\main_matrix --capacitie
 适配器只使用各 Agent 收到的公开实体信息建立投影模型，验证同时施力、阻挡、未编辑移动与交付事件。规划使用独立的 AgentScope CUBE Agent 和五种动作，不套用 Crafter 的制造目标。人工预算、S/E/P、表单、联合提交与日志复用公共控制器。
 
 ```powershell
-python run_cube.py --condition C --agent_num 3 --grid_size 9 --block_specs 2:1 --step_num 30 --results_dir results\cube --no_plot
+python run_cube.py --condition B --agent_num 3 --grid_size 9 --block_specs 2:1 --step_num 30 --results_dir results\cube --no_plot
 ```
 
 ## 6. 验证与仍需实验回答的问题

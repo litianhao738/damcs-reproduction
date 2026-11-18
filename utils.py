@@ -643,8 +643,9 @@ def get_arg_parser():
                         help='Crafter: continue from <results_dir>/checkpoint.pkl if present; refused when '
                              'the code changed since the checkpoint was written.')
     parser.add_argument('--condition', choices=['custom', *CONDITIONS], default='custom',
-                        help='A, B, C: legality repair only, progress problems recorded; D: also repairs '
-                             'progress problems automatically; H: D with human review at critical moments.')
+                        help='A: DAMCS base; B: legality repair (replanning, repair scope S as a fallback), '
+                             'progress problems recorded only; C: also repairs progress problems '
+                             'automatically; H: C with human review at critical moments.')
     parser.add_argument('--progress_mode', choices=list(PROGRESS_MODES), default='off',
                         help="Progress problems (all plans legal, next team milestone clearly slow): 'off', "
                              "'log' (record only), 'auto' (apply the best option), 'human' (ask at critical "

@@ -1,11 +1,11 @@
 """Sequential paired-seed experiment matrix and episode-level result export.
 
-Conditions: A, B, C (legality repair; progress problems recorded only), D (adds
-automatic progress repair) and H (D with human review at critical moments).
+Conditions: A (DAMCS base), B (legality repair; progress problems recorded only),
+C (adds automatic progress repair) and H (C with human review at critical moments).
 
 Suites:
   main       conditions x seeds x repeats (tables 1 and 3)
-  ablation   table 2: remove one module at a time from D, plus D with the LLM off (ignores --conditions)
+  ablation   table 2: remove one module at a time from C, plus C with the LLM off (ignores --conditions)
   appendix   design choices inside each module (appendix table; ignores --conditions)
   capacity / evidence / waiting   earlier single-factor sweeps
 With --model_profiles, every run is repeated per named profile from
@@ -38,23 +38,23 @@ def positive_int(value):
     return number
 
 
-# Table 2: remove one module at a time from D, the automatic full system. The rows
-# "- progress repair" (= C) and "- human review" (H vs D) reuse table 1 and are not run
-# here. D-no-scope keeps the scope search in 'suggest' mode, so the legality problems
-# it would have repaired are still counted, but nothing is applied. D-no-llm switches
-# every agent's language model off: what the mechanisms do on their own.
+# Table 2: remove one module at a time from C, the automatic full system. The rows
+# "- progress repair" (= B) and "- human review" (H vs C) reuse table 1 and are not run
+# here. C-no-legality turns the whole legality repair off, both replanning and the repair
+# scope S: illegal plans are only recorded, as in A, and progress repair stays on. C-no-llm
+# switches every agent's language model off: what the mechanisms do on their own.
 ABLATIONS = [
-    ('D-no-replan', 'custom', {'coordination_mode': 'repair', 'repair_rounds': 0, 'scope_mode': 'auto',
-                               'review_strategy': 'verified', 'progress_mode': 'auto'}),
-    ('D-no-scope', 'custom', {'coordination_mode': 'repair', 'repair_rounds': 2, 'scope_mode': 'suggest',
-                              'review_strategy': 'verified', 'progress_mode': 'auto'}),
-    ('D-no-llm', 'D', {'agent_llm': 'off'}),
+    ('C-no-legality', 'custom', {'coordination_mode': 'diagnose', 'repair_rounds': 0, 'scope_mode': 'off',
+                                 'review_strategy': 'verified', 'progress_mode': 'auto'}),
+    ('C-no-llm', 'C', {'agent_llm': 'off'}),
 ]
 
-# Appendix: design choices inside each module, each changing one choice and nothing else.
+# Appendix: design choices inside progress repair and human review, each changing one choice
+# and nothing else. The repair scope S is an internal fallback of legality repair and has no
+# row; scripts/evaluate_frozen_scopes.py can still measure it offline when replanning leaves
+# legality problems unsolved.
 APPENDIX = [
-    ('C-any-scope', 'C', {'scope_selection': 'any'}),
-    ('D-no-commit', 'D', {'progress_commit': 'off'}),
+    ('C-no-commit', 'C', {'progress_commit': 'off'}),
     ('Hscript', 'H', {'reviewer': 'scripted'}),
     ('Hscript-global-wait', 'H', {'reviewer': 'scripted', 'pause_mode': 'global'}),
     ('Hscript-no-recheck', 'H', {'reviewer': 'scripted', 'revalidation': 'none'}),
@@ -178,8 +178,14 @@ def summarize_run(directory, step_limit=None):
     config = read_json(directory / 'config.json')
     summary = read_json(directory / 'intervention_summary.json')
     events = list(json_lines(directory / 'events.jsonl'))
-    analyses = [entry['scope_analysis'] for entry in json_lines(directory / 'coordination.jsonl')
-                if entry.get('scope_analysis') is not None]
+    coordination = list(json_lines(directory / 'coordination.jsonl'))
+    analyses = [entry['scope_analysis'] for entry in coordination if entry.get('scope_analysis') is not None]
+    # Agents whose plan cannot be carried out this step: in the plans as first written,
+    # and after the last replanning round (before any repair scope S is applied).
+    illegal = [[{check['agent_id'] for check in round_.get('checks', [])
+                 if check.get('immediate') and check.get('status') == 'violated'}
+                for round_ in (entry['rounds'][0], entry['rounds'][-1])]
+               for entry in coordination if entry.get('rounds')]
     analyses += [event['scope_analysis'] for event in events
                  if event['event'] == 'planning_completed' and event.get('scope_analysis') is not None]
     target_snapshots = [analysis for analysis in analyses if analysis['targets']]
@@ -209,6 +215,9 @@ def summarize_run(directory, step_limit=None):
               for event in applied]
     row.update({
         'run_dir': str(directory), 'completed': bool(summary),
+        'illegal_plan_steps': sum(bool(first) for first, _ in illegal),
+        'illegal_plans_first': sum(len(first) for first, _ in illegal),
+        'illegal_plans_after_replan': sum(len(last) for _, last in illegal),
         'target_snapshots': len(target_snapshots),
         'selected_snapshots': sum(analysis['selected'] is not None for analysis in target_snapshots),
         'assignments_evaluated': sum(analysis['assignments_evaluated'] for analysis in analyses),
@@ -254,6 +263,12 @@ def summarize_run(directory, step_limit=None):
                                           if summary.get('progress_exact_commits') else None)
     row['progress_task_completion_rate'] = (summary['progress_tasks_completed'] / summary['progress_tasks']
                                             if summary.get('progress_tasks') else None)
+    # Table 1's repair success rate: legality repairs (scope S) and progress repairs
+    # (exact one-step edits and locked tasks) that reached their target, over all submitted.
+    attempts = len(outcomes) + (summary.get('progress_exact_commits') or 0) + (summary.get('progress_tasks') or 0)
+    successes = (sum(outcome['recovered'] for outcome in outcomes) + (summary.get('progress_exact_success') or 0)
+                 + (summary.get('progress_tasks_completed') or 0))
+    row['repair_success_rate'] = successes / attempts if attempts else None
     row.update(milestone_steps(directory, step_limit))
     return row
 
