@@ -40,10 +40,11 @@ STATUS_NAMES = {
     "accepted": "已采纳", "invalid": "复核未通过", "permission": "越权", "stale_plan": "计划已变化",
     "reject": "已跳过", "episode_ended": "本局已结束",
     "kept": "已保持原计划", "stale_option": "所选方案已失效，改用自动方案",
+    "already_reached": "团队已自己完成这个里程碑，不再需要处理",
 }
 
 SIGNAL_NAMES = {
-    "choice": "要做取舍，有几个 Agent 都能帮忙，请决定让谁去", "unknown": "拿不准，系统缺少信息",
+    "choice": "要做取舍：几个方案都可行，改的 Agent 不同，系统分不出明显的好坏，请决定让谁去", "unknown": "拿不准，系统缺少信息",
     "stalled": "团队卡住，已经很久没有新进展", "stage": "处于关键阶段", "all": "练习模式",
 }
 
@@ -306,8 +307,10 @@ class ReviewHandler(BaseHTTPRequestHandler):
             f'{escape(PROBLEM_TYPE_ZH.get(request["problem_type"], ""))}。'
             f'按当前计划估计还要 {escape(str(now)) + " 步" if now is not None else "很久（没有人在做）"}。</p>'
             + (f'<p class="note">为什么问你：{escape(reasons)}</p>' if reasons else '')
-            + f'<p>等待的 Agent：{request["pause_agents"]}。</p>'
-            '<p class="note">估计只算了走路和动作的步数，没有考虑怪物、岩浆、生命值、原计划马上就能完成等情况。'
+            + (f'<p>等待的 Agent：{request["pause_agents"]}。</p>' if request["pause_agents"] else
+               '<p>审阅期间团队照常行动，没有人停下等你。提交时按当时的状态重新检查所选方案，'
+               '已经失效就自动按推荐方案处理；团队先完成了这个里程碑，请求会自动结束。</p>')
+            + '<p class="note">估计只算了走路和动作的步数，没有考虑怪物、岩浆、生命值、原计划马上就能完成等情况。'
             '你看到这些情况时再换方案；拿不准就跳过。</p>'
             f'<form id="reply" method="post" action="/respond"><input type="hidden" name="id" value="{escape(request_id)}">'
             '<table><tr><th></th><th>方案</th><th>具体内容</th><th>估计</th><th>依据</th><th>改动的 Agent</th></tr>'

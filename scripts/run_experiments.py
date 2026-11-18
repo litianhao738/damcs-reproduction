@@ -50,13 +50,14 @@ ABLATIONS = [
 ]
 
 # Appendix: design choices inside progress repair and human review, each changing one choice
-# and nothing else. The repair scope S is an internal fallback of legality repair and has no
-# row; scripts/evaluate_frozen_scopes.py can still measure it offline when replanning leaves
-# legality problems unsolved.
+# and nothing else. Hscript-progress-pause holds the agents of the listed options during a
+# progress review (local waiting), where H lets everyone keep working. The repair scope S is
+# an internal fallback of legality repair and has no row; scripts/evaluate_frozen_scopes.py
+# can still measure it offline when replanning leaves legality problems unsolved.
 APPENDIX = [
     ('C-no-commit', 'C', {'progress_commit': 'off'}),
     ('Hscript', 'H', {'reviewer': 'scripted'}),
-    ('Hscript-global-wait', 'H', {'reviewer': 'scripted', 'pause_mode': 'global'}),
+    ('Hscript-progress-pause', 'H', {'reviewer': 'scripted', 'progress_pause': 'on'}),
     ('Hscript-no-recheck', 'H', {'reviewer': 'scripted', 'revalidation': 'none'}),
 ]
 
@@ -69,6 +70,7 @@ def variants(args):
     base = {'scope_max_agents': args.scope_max_agents, 'evidence_mode': args.evidence_mode,
             'pause_mode': args.pause_mode, 'revalidation': args.revalidation,
             'scope_selection': 'minimal', 'reviewer': args.reviewer, 'progress_commit': 'on',
+            'progress_pause': 'off',
             'agent_llm': 'on'}
     if args.suite in ('ablation', 'appendix'):
         rows = ABLATIONS if args.suite == 'ablation' else APPENDIX
@@ -97,6 +99,7 @@ def build_matrix(args):
             s['evidence_mode'], s['pause_mode'], s['revalidation']]
         label = '_'.join(parts + (['any'] if s['scope_selection'] == 'any' else [])
                          + (['nocommit'] if s['progress_commit'] == 'off' else [])
+                         + (['progpause'] if s['progress_pause'] == 'on' else [])
                          + (['nollm'] if s['agent_llm'] == 'off' else []))
         directory = Path(args.results_dir).resolve() / label
         command = [sys.executable, '-B', str(ROOT / ('run_cube.py' if args.environment == 'cube' else 'run.py')),
@@ -110,7 +113,8 @@ def build_matrix(args):
                    *(['--stall_steps', str(args.stall_steps)] if args.stall_steps is not None else []),
                    '--evidence_mode', s['evidence_mode'], '--pause_mode', s['pause_mode'],
                    '--revalidation', s['revalidation'], '--scope_selection', s['scope_selection'],
-                   '--progress_commit', s['progress_commit'], '--agent_llm', s['agent_llm'],
+                   '--progress_commit', s['progress_commit'], '--progress_pause', s['progress_pause'],
+                   '--agent_llm', s['agent_llm'],
                    *(['--slow_margin', str(args.slow_margin)] if args.slow_margin is not None else []),
                    '--reviewer', s['reviewer'], '--reviewer_id', args.reviewer_id,
                    '--review_timeout', str(args.review_timeout),
@@ -134,7 +138,8 @@ def build_matrix(args):
                'human_requests': args.human_requests, 'review_trigger': args.review_trigger,
                'review_cooldown': args.review_cooldown, 'stall_steps': args.stall_steps,
                'stall_fraction': args.stall_fraction, 'step_limit': args.step_num,
-               'progress_commit': s['progress_commit'], 'agent_llm': s['agent_llm'],
+               'progress_commit': s['progress_commit'], 'progress_pause': s['progress_pause'],
+               'agent_llm': s['agent_llm'],
                'slow_margin_arg': args.slow_margin}
         if profile:
             run.update(profile_record(profile, settings_file))
@@ -247,7 +252,8 @@ def summarize_run(directory, step_limit=None):
     row['requests_legal'] = sum(review.get('kind', 'legal') == 'legal' for review in reviews)
     row['requests_progress'] = sum(review.get('kind') == 'progress' for review in reviews)
     row.update({key: summary.get(key) for key in (
-        'progress_mode', 'progress_commit', 'slow_margin', 'progress_target_steps', 'progress_commits',
+        'progress_mode', 'progress_commit', 'progress_pause', 'slow_margin', 'progress_target_steps',
+        'progress_commits',
         'progress_exact_commits', 'progress_exact_success', 'progress_tasks', 'progress_tasks_completed',
         'stall_steps_total', 'committed_agent_steps', 'progress_seconds')})
     for field, prefix in (('progress_targets_by_type', 'progress_targets_'),

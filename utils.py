@@ -653,6 +653,10 @@ def get_arg_parser():
     parser.add_argument('--progress_commit', choices=['on', 'off'], default='on',
                         help="'on' locks multi-step progress assignments until done; 'off' is the ablation "
                              "that only writes them into the agents' context (default: on).")
+    parser.add_argument('--progress_pause', choices=['off', 'on'], default='off',
+                        help="'off': nobody waits during a progress review, and the chosen option is "
+                             "rechecked when the reply arrives (default); 'on' is the ablation that holds "
+                             "the agents of the listed options, following --pause_mode.")
     parser.add_argument('--agent_llm', choices=['on', 'off'], default='on',
                         help="'off' is the table-2 control 'mechanisms only': every agent gives an idle "
                              "plan and no model is called (no chat, no embeddings); only the repair "

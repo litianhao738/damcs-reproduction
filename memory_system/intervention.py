@@ -119,7 +119,7 @@ class InterventionController:
                  clock=time.monotonic, revalidation="incremental", environment="crafter",
                  search_agents=None, selection="minimal", review_trigger="signals", review_cooldown=10,
                  stall_steps=None, stall_fraction=DEFAULT_STALL_FRACTION, step_limit=None,
-                 progress_mode="off", progress_commit=True, slow_margin=None):
+                 progress_mode="off", progress_commit=True, slow_margin=None, progress_pause=False):
         """``capacity``: most agents one review may open. ``search_agents``: cap on the
         automatic repair search (None searches the smallest sufficient scope, uncapped).
         ``selection``: ``minimal`` or the ``any`` ablation. ``revalidation``:
@@ -149,8 +149,18 @@ class InterventionController:
         ``PROGRESS_MODES``. ``progress_commit=False`` is the ablation that only writes
         multi-step assignments into the agents' context instead of locking them.
         ``slow_margin``: steps an option must save to count; by default 3% of
-        ``step_limit`` (at least 2). The same three signals decide when a person is
-        asked about a progress problem."""
+        ``step_limit`` (at least 2). The ``stalled`` signal works the same way for a
+        progress problem, but ``choice`` is narrower: the two best options change
+        different agents and the machine's ranking barely separates them (both exact or
+        both estimated, costs less than ``slow_margin`` apart). A clear first option is
+        applied without asking.
+
+        A progress review holds nobody: the team keeps working, legality problems and
+        the other milestones' progress problems get the automatic repair, and the chosen
+        option is recomputed on the state when the reply arrives (a stale option falls
+        back to the automatic choice). A review whose milestone is reached in the
+        meantime closes on its own. ``progress_pause=True`` is the ablation that holds
+        the agents of the listed options, following ``pause_mode``."""
         if revalidation not in ("incremental", "full", "none"):
             raise ValueError("revalidation must be 'incremental', 'full' or 'none'")
         if review_trigger not in REVIEW_TRIGGERS:
@@ -187,6 +197,7 @@ class InterventionController:
         self.requests_by_kind = Counter()
         # Progress repair state.
         self.progress_mode, self.progress_commit = progress_mode, progress_commit
+        self.progress_pause = progress_pause
         self.slow_margin = slow_margin_for(slow_margin, step_limit)
         self.tasks = {}            # agent id -> locked task
         self.progress_hold = {}    # milestone -> step until which a reviewer's "keep" holds
@@ -226,7 +237,9 @@ class InterventionController:
     def _pause(self, agents, plans, observations):
         request = self.pending
         targets = request.get("targets", [])
-        if self.pause_mode == "global":
+        if request.get("kind") == "progress" and not self.progress_pause:
+            request["paused"] = set()
+        elif self.pause_mode == "global":
             request["paused"] = {agent.id for agent in agents}
         elif self.pause_mode == "local" and request.get("kind") == "progress":
             # The agents the listed options would change or lock.
@@ -547,7 +560,11 @@ class InterventionController:
                     'snapshot': self.adapter.snapshot(observations, full=True),
                 })
         if self.pending is not None:
-            self._resolve(agents, observations, responses, plans)
+            resolved = self._resolve(agents, observations, responses, plans)
+            if not resolved and self._progress_review_open() and self.mode in ("auto", "human"):
+                # The team keeps working while a progress review is open; its legality
+                # problems get the automatic repair, as everything not sent to a person does.
+                self._auto(agents, observations, responses, plans)
         elif self.mode == "auto":
             self._auto(agents, observations, responses, plans, analysis)
         elif self.mode == "human" and analysis is not None and analysis["targets"]:
@@ -564,11 +581,16 @@ class InterventionController:
                 # Everything not sent to a person, critical or not, gets the automatic repair.
                 self._auto(agents, observations, responses, plans, analysis)
         effective = effective_plans(responses, plans)
-        if self.progress_mode != "off" and self.pending is None:
-            # Progress problems are checked on the plans left after legality repair.
+        if self.progress_mode != "off" and (self.pending is None or self._progress_review_open()):
+            # Progress problems are checked on the plans left after legality repair. While a
+            # progress review is open, the other milestones are repaired automatically.
             self._progress(agents, observations, responses, effective)
             effective = effective_plans(responses, plans)
         return self._guard(agents, observations, responses, effective)
+
+    def _progress_review_open(self):
+        """A progress review is waiting for its reply and the team keeps working."""
+        return self.pending is not None and self.pending.get("kind") == "progress" and not self.progress_pause
 
     # Progress repair -------------------------------------------------------------
 
@@ -615,6 +637,8 @@ class InterventionController:
         step = agents[0].step
         handled = {task["milestone"] for task in self.tasks.values()}
         handled |= {milestone for milestone, until in self.progress_hold.items() if step < until}
+        if self.pending is not None and self.pending.get("kind") == "progress":
+            handled.add(self.pending["milestone"])  # waits for the reviewer
         analysis = self.adapter.progress_analysis(
             plans, observations, self.adapter.goals(agents, responses), self._free_agents(agents, responses),
             self.slow_margin, stalled=step - self.last_progress_step >= self.stall_steps, skip=handled, **options)
@@ -655,8 +679,13 @@ class InterventionController:
         if self.review_trigger == "stage":
             return ["stage"] if self.adapter.critical(self.adapter.milestone_target(problem["milestone"])) else []
         found = []
-        if len({frozenset(option["agents"]) for option in options}) >= 2:
-            found.append("choice")
+        if len(options) >= 2:
+            # Only a close call: the two best options divert different agents and the
+            # ranking (exact first, then cost) barely separates them.
+            best, second = options[0], options[1]
+            if (best["exact"] == second["exact"] and second["cost"] - best["cost"] < self.slow_margin
+                    and set(best["agents"]) != set(second["agents"])):
+                found.append("choice")
         if step - self.last_progress_step >= self.stall_steps:
             found.append("stalled")
         return found
@@ -701,10 +730,15 @@ class InterventionController:
         pending = self.pending
         path = self.review_dir / f"{pending['id']}.response.json"
         timed_out = self.clock() - pending["started"] >= self.timeout
-        if not path.exists() and not timed_out:
+        # The team kept working and may have reached the milestone on its own.
+        reached = self.adapter.milestone_reached(pending["milestone"], observations)
+        if not path.exists() and not timed_out and not reached:
             self._pause(agents, plans, observations)
             return False
-        response = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"decision": "timeout"}
+        if path.exists():
+            response = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            response = {"decision": "reached" if reached else "timeout"}
         decision = response["decision"]
         self.human_seconds += response.get("read_seconds", 0)
         replies = {reply["id"]: reply for reply in responses}
@@ -719,7 +753,9 @@ class InterventionController:
             self._auto(agents, observations, responses, plans)
         current = effective_plans(responses, plans)
         option_id = pending["recommended"] if decision == "approve" else response.get("option_id")
-        if decision in ("approve", "choose"):
+        if reached:
+            status, reply = "already_reached", "reached"
+        elif decision in ("approve", "choose"):
             analysis = self._progress_analysis(agents, observations, responses, current, only=[milestone], force=True)
             match = [option for problem in analysis["problems"] for option in problem["options"]
                      if option["option_id"] == option_id]
@@ -875,7 +911,7 @@ class InterventionController:
         summary.update({
             "requests_legal": self.requests_by_kind["legal"], "requests_progress": self.requests_by_kind["progress"],
             "progress_mode": self.progress_mode, "progress_commit": self.progress_commit,
-            "slow_margin": self.slow_margin,
+            "progress_pause": self.progress_pause, "slow_margin": self.slow_margin,
             "progress_target_steps": counts["target_steps"],
             "progress_targets_by_type": {key[len("targets_"):]: value for key, value in counts.items()
                                          if key.startswith("targets_")},

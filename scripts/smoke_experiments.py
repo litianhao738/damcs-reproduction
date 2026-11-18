@@ -62,7 +62,7 @@ class ExperimentChecks(unittest.TestCase):
     def test_appendix_suite_changes_one_design_choice_per_row(self):
         args = get_parser().parse_args(['--suite', 'appendix', '--seeds', '4', '--results_dir', self.output.name])
         rows = {row['variant']: row['command'] for row in build_matrix(args)}
-        self.assertEqual(set(rows), {'C-no-commit', 'Hscript', 'Hscript-global-wait', 'Hscript-no-recheck'})
+        self.assertEqual(set(rows), {'C-no-commit', 'Hscript', 'Hscript-progress-pause', 'Hscript-no-recheck'})
 
         def flag(command, name):
             return command[command.index(name) + 1]
@@ -72,8 +72,9 @@ class ExperimentChecks(unittest.TestCase):
         base = rows['Hscript']
         self.assertEqual((flag(base, '--reviewer'), flag(base, '--pause_mode'), flag(base, '--revalidation'),
                           flag(base, '--evidence_mode')), ('scripted', 'local', 'incremental', 'compact'))
-        self.assertEqual((flag(base, '--condition'), flag(base, '--progress_commit')), ('H', 'on'))
-        changed = {'Hscript-global-wait': ('--pause_mode', 'global'),
+        self.assertEqual((flag(base, '--condition'), flag(base, '--progress_commit'), flag(base, '--progress_pause')),
+                         ('H', 'on', 'off'))
+        changed = {'Hscript-progress-pause': ('--progress_pause', 'on'),
                    'Hscript-no-recheck': ('--revalidation', 'none')}
         for variant, (name, value) in changed.items():
             with self.subTest(variant=variant):
@@ -81,7 +82,7 @@ class ExperimentChecks(unittest.TestCase):
                 self.assertEqual(flag(command, name), value)
                 differing = [option for option in ('--pause_mode', '--revalidation', '--evidence_mode',
                                                    '--reviewer', '--scope_selection', '--condition',
-                                                   '--progress_commit')
+                                                   '--progress_commit', '--progress_pause')
                              if flag(command, option) != flag(base, option)]
                 self.assertEqual(differing, [name])
 

@@ -207,13 +207,71 @@ class CrafterProgressChecks(unittest.TestCase):
         AgentThinkingProcessor.update_agents_from_responses(self.agents, replies)
         return replies
 
-    def test_h_asks_when_options_divert_different_agents_and_applies_the_choice(self):
+    def test_h_does_not_ask_when_the_first_option_is_clearly_better(self):
+        # The exact one-step handover beats the walking alternatives: no close call to make.
         self.stone_pickaxe_scene()
         controller = self.controller(mode='human', progress_mode='human')
         self.plan_step(controller)
+        self.assertEqual((controller.issued, controller.pending), (0, None))
+        self.assertEqual((self.agents[0].op, self.agents[2].op), ('share', 'make_stone_pickaxe'))
+        skipped = next(event for event in self.events() if event['event'] == 'review_skipped')
+        self.assertEqual((skipped['reason'], skipped['milestone']), ('not_critical', 'make_stone_pickaxe'))
+
+    def test_choice_signal_needs_a_close_call_between_different_agents(self):
+        controller = self.controller(mode='human', progress_mode='human')
+
+        def option(agents, cost, exact=True):
+            return {'agents': agents, 'cost': cost, 'exact': exact}
+
+        best = option([0, 2], 9)
+        cases = {
+            'close, different agents': ([best, option([1, 2], 12)], ['choice']),
+            'one agent apart in cost (Δ = 4)': ([best, option([1, 2], 13)], []),
+            'exact against an estimate': ([best, option([1, 2], 10, exact=False)], []),
+            'same agents': ([best, option([2, 0], 10)], []),
+            'only one option': ([best], []),
+        }
+        for name, (options, expected) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(controller._progress_signals({'milestone': 'make_stone_pickaxe'}, options, 0),
+                                 expected)
+
+    def test_progress_review_holds_nobody_and_closes_once_the_milestone_is_reached(self):
+        self.stone_pickaxe_scene()
+        controller = self.controller(mode='human', progress_mode='human', review_trigger='all', pause_mode='local')
+        self.plan_step(controller)
+        request = json.loads((controller.review_dir / 'review_0001.json').read_text(encoding='utf-8'))
+        self.assertEqual(request['pause_agents'], [])
+        self.assertFalse(any(agent.review_paused for agent in self.agents))
+        # While the review is open the team keeps its own plans for this milestone; no second request.
+        self.plan_step(controller)
+        self.assertEqual((controller.issued, self.agents[0].op), (1, 'Navigator'))
+        # The team makes the pickaxe on its own before anyone answers: the request closes by itself.
+        self.players[0].achievements['make_stone_pickaxe'] = 1
+        self.obs = self.fixture.observations()
+        controller.before_actions(self.agents, self.obs)
+        self.assertIsNone(controller.pending)
+        self.assertEqual(dict(controller.progress_replies), {'reached': 1})
+        status = json.loads((controller.review_dir / 'review_0001.status.json').read_text(encoding='utf-8'))
+        self.assertEqual(status['status'], 'already_reached')
+        self.assertEqual(controller.paused_agent_steps, 0)
+
+    def test_progress_pause_ablation_holds_the_option_agents(self):
+        self.stone_pickaxe_scene()
+        controller = self.controller(mode='human', progress_mode='human', review_trigger='all', pause_mode='local',
+                                     progress_pause=True)
+        self.plan_step(controller)
+        request = json.loads((controller.review_dir / 'review_0001.json').read_text(encoding='utf-8'))
+        self.assertEqual(request['pause_agents'], request['edit_agents'])
+        self.assertTrue(all(self.agents[agent_id].review_paused for agent_id in request['pause_agents']))
+
+    def test_h_applies_the_option_the_reviewer_chooses(self):
+        self.stone_pickaxe_scene()
+        controller = self.controller(mode='human', progress_mode='human', review_trigger='all')
+        self.plan_step(controller)
         request = json.loads((controller.review_dir / 'review_0001.json').read_text(encoding='utf-8'))
         self.assertEqual((request['kind'], request['milestone']), ('progress', 'make_stone_pickaxe'))
-        self.assertEqual(request['trigger_signals'], {'progress:make_stone_pickaxe': ['choice']})
+        self.assertEqual(request['trigger_signals'], {'progress:make_stone_pickaxe': ['all']})
         other = request['options'][1]
         self.assertEqual((other['executor'], other['exact']), (1, False))
         self.respond(controller, decision='choose', option_id=other['option_id'])
@@ -226,7 +284,7 @@ class CrafterProgressChecks(unittest.TestCase):
 
     def test_h_keep_holds_the_milestone_and_skip_uses_the_recommended_option(self):
         self.stone_pickaxe_scene()
-        controller = self.controller(mode='human', progress_mode='human')
+        controller = self.controller(mode='human', progress_mode='human', review_trigger='all')
         self.plan_step(controller)
         self.respond(controller, decision='keep')
         self.assertEqual((controller.tasks, controller.progress_hold), ({}, {'make_stone_pickaxe': 10}))
@@ -244,14 +302,14 @@ class CrafterProgressChecks(unittest.TestCase):
 
     def test_review_page_lists_the_options_and_records_keep(self):
         self.stone_pickaxe_scene()
-        controller = self.controller(mode='human', progress_mode='human')
+        controller = self.controller(mode='human', progress_mode='human', review_trigger='all')
         self.plan_step(controller)
         server = ReviewServer(controller.review_dir, 0)
         address = server.start()
         self.addCleanup(server.close)
         with urlopen(address + '/review?id=review_0001') as page:
             text = page.read().decode('utf-8')
-        for expected in ('进度问题', '做石镐', '换人做', '把 1 个木头送给 Agent 2', '不改'):
+        for expected in ('进度问题', '做石镐', '换人做', '把 1 个木头送给 Agent 2', '不改', '没有人停下等你'):
             self.assertIn(expected, text)
         data = urlencode({'id': 'review_0001', 'decision': 'choose', 'option': '__keep__'}).encode()
         with urlopen(Request(address + '/respond', data=data)) as reply:
