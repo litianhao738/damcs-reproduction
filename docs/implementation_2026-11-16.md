@@ -84,12 +84,12 @@ CUBE 当前保留完整公开棋盘为一个事实组，不宣称已实现 CUBE 
 
 - `choice`：能修好该问题的已验证方案改的是不同的 Agent 集合，需要人决定打断谁。
 - `unknown`：没有已验证方案，且搜索结果中存在因信息缺失而无法判定的范围。
-- `stalled`：环境适配器的 `progress` 在一段时间内没有增长。这段时间默认是每局步数的 `--stall_fraction`（0.1，四舍五入且至少 1 步：Crafter 350 步对应 35 步，CUBE 30 步对应 3 步），`--stall_steps` 可改为固定步数；不知道每局步数时取 30 步。Crafter 的进度是全队解锁的不同成就数，CUBE 是团队得分。
+- `stalled`：环境适配器的 `progress` 在一段时间内没有增长。这段时间默认是每局步数的 `--stall_fraction`（0.1，四舍五入且至少 1 步：Crafter 350 步对应 35 步，CUBE 30 步对应 3 步），`--stall_steps` 可改为固定步数；不知道每局步数时取 30 步。Crafter 的进度是全队达成的主线里程碑数（钻石链的 10 个阶段，2026-11-18 起；此前数全部成就，喝水、吃牛也算进度），CUBE 是团队得分。
 
 问人时：
 
 - 只针对被判为关键的问题；同一步的其他问题和所有未问人的情况都走同一个自动后备分支，事件 `review_skipped` 记录原因（`not_critical`、`cooldown`、`over_review_capacity` 等）。请求文件记录每个问题的触发信号（`trigger_signals`），审阅页面会显示。
-- H2 开放所选修复涉及的 Agent，并在不超过 `--review_max_agents` 的前提下加入其他已验证方案涉及的 Agent，开放字段取这些方案实际修改字段的并集，人可以在已验证的方案之间选择。`unknown` 时没有已验证方案，开放问题涉及的 Agent（诊断中的证据组），字段全部开放。确定修不了的问题不开放。
+- H（原 H2）开放所选修复涉及的 Agent，并在不超过 `--review_max_agents` 的前提下加入其他已验证方案涉及的 Agent，开放字段取这些方案实际修改字段的并集，人可以在已验证的方案之间选择。`unknown` 时没有已验证方案，开放问题涉及的 Agent（诊断中的证据组），字段全部开放。确定修不了的问题不开放。
 - `unknown` 请求中，审阅者的修改检查结果仍为 unknown 时，只要它让至少一个"不改就确定修不好"的问题变得可能修好，就按审阅者的判断执行，记为 `human_vouched`；对任何问题都没有帮助、或会确定破坏其他工作的修改仍被拒绝。预检页面会提示属于哪种情况。
 - 同一问题问过之后 `--review_cooldown`（默认 10）步内不再重复问。
 
@@ -100,37 +100,128 @@ CUBE 当前保留完整公开棋盘为一个事实组，不宣称已实现 CUBE 
 可用 `--reviewer scripted` 和 `--scripted_delay_steps` 检查固定延迟流程。此模式明确标记 `provider=scripted`，阅读时间为 0，不能进入真人增益统计。脚本采用建议本质上仍是自动选择，适合验证系统行为。
 
 ```powershell
-python run.py --condition H2 --agent_num 6 --step_num 350 --review_max_agents 2 --pause_mode local --results_dir results\human_h2 --no_plot
+python run.py --condition H --agent_num 6 --step_num 350 --review_max_agents 2 --pause_mode local --results_dir results\human_h --no_plot
 ```
 
 需要单独运行表单服务时，使用 `python scripts\review_server.py --results_dir results\human_h2 --port 8765`，并将运行器的 `--review_port` 设为 0。
 
 ## 4. 对比与消融入口
 
-正式要跑的三张表（主实验、部件消融、跨模型对比）及其统一设置、指标和运行前待办，见 [实验表设计](experiment_tables_2026-11-17.md)。2026-11-18 起表格条件改为 A、B、C、D、H（新增处理"合法但慢"计划的 D，H1、H2 合并为 H），设计见 [进度问题修复设计](progress_repair_design_2026-11-18.md)；本文描述的仍是现有代码，其中还没有 D、H。主环境为 MA-Crafter，CUBE 只用于表 1。2026-11-17 起补齐了运行三张表所需的部分：任意 OpenAI 兼容接口与命名模型配置（`config/model_profiles.json`、`scripts/run_with_model.py`）、独立的 Embedding 配置、表 2 的消融套件（`--suite ablation`，含 `--scope_selection any` 与 `--revalidation none`）以及钻石步数、改动人数和费用等汇总字段。
+正式要跑的三张表（主实验、部件消融、跨模型对比）及其统一设置、指标和运行前待办，见 [实验表设计](experiment_tables_2026-11-17.md)。2026-11-18 起表格条件改为 A、B、C、D、H（新增处理"合法但慢"计划的 D，H1、H2 合并为 H），设计见 [进度问题修复设计](progress_repair_design_2026-11-18.md)，实现见下面第 4.1 节。三张表都只跑 MA-Crafter；CUBE 的代码保留，可作附录，2026-11-18 起不进表格。2026-11-17 起补齐了运行三张表所需的部分：任意 OpenAI 兼容接口与命名模型配置（`config/model_profiles.json`、`scripts/run_with_model.py`）、独立的 Embedding 配置、表 2 的消融套件（`--suite ablation`，2026-11-18 起为从 D 逐个去掉模块：`D-no-replan`、`D-no-scope`、`D-no-llm`；模块内部的设计检验在 `--suite appendix`：`C-any-scope`、`D-no-commit`、`Hscript`、`Hscript-global-wait`、`Hscript-no-recheck`）。`--agent_llm off` 让所有 Agent 一律给出 noop 计划，不调用对话模型和 Embedding，用于"只靠机制"的对照以及钻石步数、改动人数和费用等汇总字段。
 
-| 条件 | 最终行为 |
+| 条件 | 最终行为 | `--progress_mode` |
+| --- | --- | --- |
+| A | 自主规划，统一动作合法性保护 | `log`：只记录进度问题 |
+| B | A + 最多两轮定向重规划 | `log` |
+| C | B + 可修复候选自动选择、提交与执行 | `log` |
+| D | C + 进度问题自动修复（采用排第一的方案） | `auto` |
+| H | D 的人审版：不合法问题和进度问题在关键时刻都问人，其余同 D | `human` |
+
+条件定义在 `memory_system/experiments.py` 的 `CONDITIONS`。H 的不合法问题人审沿用原 H2：开放可修复范围，字段收缩到所选见证的实际修改字段。`--review_strategy owner`（原 H1 的"开放出问题的 Agent"）仍可用 `--condition custom` 运行，并用于离线对比，但不再是表格条件。
+
+编号变更：
+
+- 2026-11-17：旧方案中覆盖完整关联组、开放全部字段的结构参照（当时叫 H1）已删除，因为它允许人在较大范围内自由修改，结果难以量化；原来的 H0 改名为 H1。
+- 2026-11-18：H1、H2 合并为 H，新增 D。旧结果中的 H2 相当于没有进度修复的 H；H1 的比较改为离线统计（`scripts/evaluate_frozen_scopes.py` 输出中的 `strategies.owner` 对 `strategies.verified`）。
+
+### 4.1 进度问题修复（D、H）
+
+设计理由见 [进度问题修复设计](progress_repair_design_2026-11-18.md)。代码分布：
+
+- Crafter 部分在 `memory_system/progress_repair.py`。
+- CUBE 部分在 `memory_system/progress_cube.py`。
+- 页面和提示文字在 `memory_system/progress_text.py`。
+- 控制器入口是 `InterventionController.prepare`、`_progress`、`_apply_progress`、`_progress_request`、`_resolve_progress`。
+
+**每个规划步的流程**
+
+1. **规划前（`prepare`）。** 锁定任务按当前观测给出本步计划。被锁定的 Agent 不调用 LLM，不参与重规划，也不会被不合法修复改动。
+   - 解除锁定的条件：里程碑已达成（谁达成都算）、任务完成、走不通、睡着、生命值 ≤ 3、超出步数上限。
+   - 解除时在该 Agent 的上下文里写明原因。
+   - 任务一旦达成里程碑，环境步结束后就立即解除。
+2. **不合法问题照旧处理。** B 用重规划，C、D、H 用可修复范围的修复。
+3. **检查进度问题。** 在不合法修复之后的计划上，逐个检查"下一个里程碑"（尚未达成、前提已达成的阶段）。
+   - **当前估计：** 找当前目标就是该里程碑的 Agent（模型回复里的 `goal.current_goal`）。没有的话，看相关目标，例如"采木头"之于"放工作台"。按它自己的物品和本步计划收到的东西，估计它独自完成需要多少步。
+   - **候选方案：** 每个可改动的 Agent 都试一次当执行者，模板是补给、换人做、改派采集；制作类里程碑再加"就地建"。执行者缺的材料先找队友远程送；送不了的，由执行者自己或一个队友去采。
+   - **估计步数：** 在 DAMCS 导航所用的同一张语义地图上做广度优先搜索，其他玩家和动物占用的格子不可走。
+     - 走到材料旁并面对它：走路步数 + 1。
+     - 制作：只需进入设施的 3×3 范围。
+     - 每次送东西占送出者一步，可以和执行者的动作在同一步。
+   - **精确方案：** 同时满足估计 1 步、无需采集、每个送出者只送 1 件时，用不合法修复的一步联合模型验证：执行者当步完成里程碑，且没被改动的 Agent 原本已验证的动作不受影响。
+   - **算作进度问题：** 有精确方案而当前计划还要 ≥ 2 步；或者最好的方案比当前少 ≥ Δ 步。Δ 由 `--slow_margin` 设置，默认是步数上限的 3%，至少 2，350 步时为 10 步。
+   - **估不出时：** 团队卡住、但一个方案都估不出来，记为 `unknown`。这类问题只记录、不问人，因为没有可选的方案。
+   - **排序：** 精确方案优先；其次按"代价 = 估计步数 + Δ × 改动人数"，即每多改一个人，相当于多花 Δ 步；再按改动人数、估计步数。
+4. **D：** 对每个问题采用排第一的方案，同一步内同一个 Agent 不会被两个方案使用。
+   - 精确方案作为当步的计划修改提交。
+   - 多步方案变成锁定任务，步数上限 = 估计步数 × 1.5 + 3。
+   - 消融 `--progress_commit off`：多步方案只写进上下文，不锁定。
+5. **H：** 信号响了（`choice`：多个方案改的 Agent 不同；`stalled`：团队卡住）且不在冷却期时，发出 `kind: progress` 的请求；否则同 D。人可以：
+   - 选列表里的一个方案；
+   - 选"不改"：该里程碑 `--review_cooldown` 步内不再处理；
+   - 跳过：按排第一的方案处理。超时同跳过。
+
+   所选方案在回复时按当前状态重新计算；如果已经失效，按跳过处理，记为 `stale_option`。等待期间暂停的 Agent 和不合法问题的人审规则一样（`--pause_mode`）：`local` 时暂停列出的方案涉及的 Agent。
+
+**CUBE**
+
+- 里程碑是送达每个箱子。
+- 方案：给箱子左侧推面的每一格分配一个 Agent，选最晚到达时间最短的分配。所有人都已在位时，用一步模型验证第一推。
+- 锁定任务：走到指定格，等人齐，再一起向右推，直到送达。
+- 前方被另一个箱子挡住的箱子不出方案，先处理挡在前面的那个。
+- 只考虑向右推。
+
+**指标**
+
+`intervention_summary.json` 中的字段：
+
+| 字段 | 含义 |
 | --- | --- |
-| A | 自主规划，统一动作合法性保护 |
-| B | A + 最多两轮定向重规划 |
-| C | B + 可修复候选自动选择、提交与执行 |
-| H1 | C 的共同自动能力 + 按问题主体排序选择人审范围 |
-| H2 | 共同自动能力 + 可修复范围人审 |
+| `progress_target_steps`、`progress_targets_by_type` | 出现进度问题的步数，按类型分 |
+| `progress_commits`、`progress_commits_by_template`、`progress_commits_by_source` | 提交的进度修复，按模板、来源分 |
+| `progress_exact_commits`、`progress_exact_success` | 精确方案次数、当步生效次数 |
+| `progress_tasks`、`progress_tasks_completed`、`progress_task_releases` | 锁定任务数、完成数、按原因的解除次数 |
+| `progress_estimate_errors` | 每次的实际步数减估计步数 |
+| `progress_replies` | 进度问题人审的各种回复 |
+| `stall_steps_total` | 卡住的总步数 |
+| `committed_agent_steps` | 锁定执行、没有调用 LLM 的 Agent 步数 |
+| `requests_legal`、`requests_progress` | 两类问题各自问人的次数 |
 
-两个人审策略共用输入、候选有限域和容量；H2 进一步把开放字段收缩到所选见证的实际修改字段。`--review_strategy` 现在只接受 `verified`（H2）和 `owner`（H1）。
+`run_experiments.py` 把这些字段汇总进 `episodes.csv`，并另算估计误差的均值和中位数、精确方案生效率、任务完成率。
 
-编号变更（2026-11-17）：旧方案中覆盖完整关联组、开放全部字段的结构参照（当时叫 H1）已删除，因为它允许人在较大范围内自由修改，结果难以量化；原来的 H0 改名为 H1。本文和其他文档中更早的 H0 即现在的 H1。
+**验证（2026-11-18）**
+
+离线测试 `scripts/smoke_progress.py` 共 15 项，全套 138 项全部通过。
+
+离线端到端检查（不调用模型，所有 Agent 的 LLM 回复一律是 noop）：
+
+| 环境 | 设置 | 结果 |
+| --- | --- | --- |
+| Crafter | C（只记录） | 一个里程碑都没完成 |
+| Crafter | D | 第 100 步采到钻石；10 次进度修复，13 个锁定任务全部完成，估计误差 −1 到 2 步 |
+| Crafter | H（脚本审阅：延迟 2 步，总是采纳推荐） | 问了 10 次（每个进度问题都触发了 `choice`），第 110 步采到钻石 |
+| CUBE | C | 5 个种子全部 0 分 |
+| CUBE | D | 种子 5、6、7、8 分别得 5、3、2、2 分；种子 4 两个箱子互相挡住，只向右推无解，得 0 分 |
+
+两组设置：
+
+- Crafter：种子 4，6 个 Agent，150 步。
+- CUBE：15×15，3 个 Agent，重量 2 和 3 的箱子各一个，30 步。
+
+**解读时要注意：**
+
+- **D 本身就是一个规划器。** LLM 什么都不做时，D 也能独自走完钻石链。也就是说，进度修复本身就是一个基于合成配方和整张地图的规划器。D − C 里会包含这个规划器自身的作用，不只是"修复 LLM 的计划"。正式实验应报告锁定步数占全部 Agent 步数的比例。可以考虑加一组"D，LLM 关闭"的零花费对照，这一组尚未加入表格。
+- **H 可能问人很多。** H 在进度问题上几乎每次都会因为 `choice` 而问人，问人次数需要按类型报告。
 
 每局配置记录种子、重复编号、模型名称、Git 提交与当前源码 SHA256。正式条件都使用相同动作保护；兼容 API 中旧的诊断模式语义不用于区分保护强弱。
 
 ```powershell
 # 先检查运行矩阵，不调用模型
-python scripts\run_experiments.py --conditions A B C H1 H2 --seeds 4 5 6 --repeats 2 --dry_run --results_dir results\main_matrix
+python scripts\run_experiments.py --conditions A B C D H --seeds 4 5 6 --repeats 2 --dry_run --results_dir results\main_matrix
 
 # 去掉 --dry_run 后，按矩阵顺序运行并保存每局结果
-python scripts\run_experiments.py --conditions C H2 --seeds 4 5 6 --suite capacity --reviewer scripted --results_dir results\capacity
-python scripts\run_experiments.py --conditions H2 --seeds 4 5 6 --suite evidence --results_dir results\evidence
-python scripts\run_experiments.py --conditions H2 --seeds 4 5 6 --suite waiting --results_dir results\waiting
+python scripts\run_experiments.py --conditions C H --seeds 4 5 6 --suite capacity --reviewer scripted --results_dir results\capacity
+python scripts\run_experiments.py --conditions H --seeds 4 5 6 --suite evidence --results_dir results\evidence
+python scripts\run_experiments.py --conditions H --seeds 4 5 6 --suite waiting --results_dir results\waiting
 
 # 从真实运行冻结的同一批输入比较范围策略与联合条件
 python scripts\evaluate_frozen_scopes.py --input results\main_matrix --capacities 1 2 --output results\frozen_comparison.json

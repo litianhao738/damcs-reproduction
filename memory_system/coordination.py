@@ -305,6 +305,7 @@ async def coordinate(agents, observations, contexts, responses, replan, max_roun
             for agent_id in check.related_agents
             if agent_id in by_id
             and not agents[agent_id].review_paused
+            and getattr(agents[agent_id], "progress_task", None) is None
             and not observations[agent_id].get("sleeping", False)
             and not observations[agent_id].get("dead", False)
         }

@@ -29,41 +29,60 @@ class ExperimentChecks(unittest.TestCase):
         rows = build_matrix(args)
         self.assertEqual(len(rows), 20)
         self.assertEqual(len({row['run_id'] for row in rows}), 20)
-        self.assertEqual({row['condition'] for row in rows}, {'A', 'B', 'C', 'H1', 'H2'})
-        for condition in ('A', 'B', 'C', 'H1', 'H2'):
+        self.assertEqual({row['condition'] for row in rows}, {'A', 'B', 'C', 'D', 'H'})
+        for condition in ('A', 'B', 'C', 'D', 'H'):
             self.assertEqual({(row['seed'], row['repeat_id']) for row in rows if row['condition'] == condition},
                              {(4, 0), (4, 1), (5, 0), (5, 1)})
 
     def test_waiting_ablation_contains_three_declared_controls(self):
-        args = get_parser().parse_args(['--suite', 'waiting', '--conditions', 'H2', '--seeds', '4'])
+        args = get_parser().parse_args(['--suite', 'waiting', '--conditions', 'H', '--seeds', '4'])
         commands = [row['command'] for row in build_matrix(args)]
         self.assertEqual({(cmd[cmd.index('--pause_mode') + 1], cmd[cmd.index('--revalidation') + 1]) for cmd in commands},
                          {('global', 'full'), ('none', 'full'), ('local', 'incremental')})
 
-    def test_ablation_suite_changes_one_component_per_row(self):
+    def test_ablation_suite_removes_one_module_from_d(self):
         args = get_parser().parse_args(['--suite', 'ablation', '--seeds', '4', '--results_dir', self.output.name])
         rows = {row['variant']: row['command'] for row in build_matrix(args)}
-        self.assertEqual(len(rows), 7)
+        self.assertEqual(set(rows), {'D-no-replan', 'D-no-scope', 'D-no-llm'})
 
         def flag(command, name):
             return command[command.index(name) + 1]
 
-        no_replan = rows['C-no-replan']
-        self.assertEqual((flag(no_replan, '--condition'), flag(no_replan, '--repair_rounds'),
-                          flag(no_replan, '--scope_mode')), ('custom', '0', 'auto'))
+        def settings(command):
+            return tuple(flag(command, name) for name in ('--repair_rounds', '--scope_mode', '--progress_mode'))
+
+        # D itself: repair, 2 rounds, automatic legality and progress repair, model on.
+        self.assertEqual(settings(rows['D-no-replan']), ('0', 'auto', 'auto'))
+        self.assertEqual(settings(rows['D-no-scope']), ('2', 'suggest', 'auto'))
+        self.assertEqual((flag(rows['D-no-llm'], '--condition'), flag(rows['D-no-llm'], '--agent_llm')), ('D', 'off'))
+        self.assertTrue(all(flag(rows[name], '--agent_llm') == 'on' for name in ('D-no-replan', 'D-no-scope')))
+        self.assertTrue(rows['D-no-llm'][rows['D-no-llm'].index('--results_dir') + 1].endswith('nollm'))
+
+    def test_appendix_suite_changes_one_design_choice_per_row(self):
+        args = get_parser().parse_args(['--suite', 'appendix', '--seeds', '4', '--results_dir', self.output.name])
+        rows = {row['variant']: row['command'] for row in build_matrix(args)}
+        self.assertEqual(set(rows), {'C-any-scope', 'D-no-commit', 'Hscript', 'Hscript-global-wait',
+                                     'Hscript-no-recheck'})
+
+        def flag(command, name):
+            return command[command.index(name) + 1]
+
         self.assertEqual(flag(rows['C-any-scope'], '--scope_selection'), 'any')
-        base = rows['H2script']
+        self.assertEqual((flag(rows['D-no-commit'], '--condition'), flag(rows['D-no-commit'], '--progress_commit')),
+                         ('D', 'off'))
+        base = rows['Hscript']
         self.assertEqual((flag(base, '--reviewer'), flag(base, '--pause_mode'), flag(base, '--revalidation'),
                           flag(base, '--evidence_mode')), ('scripted', 'local', 'incremental', 'compact'))
-        changed = {'H2script-global-wait': ('--pause_mode', 'global'), 'H2script-no-wait': ('--pause_mode', 'none'),
-                   'H2script-full-recheck': ('--revalidation', 'full'),
-                   'H2script-no-recheck': ('--revalidation', 'none')}
+        self.assertEqual((flag(base, '--condition'), flag(base, '--progress_commit')), ('H', 'on'))
+        changed = {'Hscript-global-wait': ('--pause_mode', 'global'),
+                   'Hscript-no-recheck': ('--revalidation', 'none')}
         for variant, (name, value) in changed.items():
             with self.subTest(variant=variant):
                 command = rows[variant]
                 self.assertEqual(flag(command, name), value)
                 differing = [option for option in ('--pause_mode', '--revalidation', '--evidence_mode',
-                                                   '--reviewer', '--scope_selection', '--condition')
+                                                   '--reviewer', '--scope_selection', '--condition',
+                                                   '--progress_commit')
                              if flag(command, option) != flag(base, option)]
                 self.assertEqual(differing, [name])
 
@@ -118,10 +137,14 @@ class ExperimentChecks(unittest.TestCase):
         self.assertFalse(Path(failed['directory']).exists())
 
     def test_condition_presets_and_config_capture_source_without_credentials(self):
-        args = get_arg_parser().parse_args(['--condition', 'H2'])
-        apply_condition(args)
-        self.assertEqual((args.coordination_mode, args.repair_rounds, args.scope_mode, args.review_strategy),
-                         ('repair', 2, 'human', 'verified'))
+        presets = {'A': ('diagnose', 0, 'off', 'verified', 'log'), 'B': ('repair', 2, 'off', 'verified', 'log'),
+                   'C': ('repair', 2, 'auto', 'verified', 'log'), 'D': ('repair', 2, 'auto', 'verified', 'auto'),
+                   'H': ('repair', 2, 'human', 'verified', 'human')}
+        for condition, expected in presets.items():
+            args = get_arg_parser().parse_args(['--condition', condition])
+            apply_condition(args)
+            self.assertEqual((args.coordination_mode, args.repair_rounds, args.scope_mode, args.review_strategy,
+                              args.progress_mode), expected)
         config = experiment_config(args, 'crafter')
         self.assertTrue(config['execution_guard'])
         self.assertEqual(len(config['source_sha256']), 64)
@@ -129,7 +152,7 @@ class ExperimentChecks(unittest.TestCase):
         self.assertTrue(all('KEY' not in name for name in config['models']))
 
     def test_export_preserves_failures_and_distinguishes_human_from_scripted(self):
-        write_json(self.directory / 'config.json', {'condition': 'H2', 'reviewer': 'scripted', 'seed': 4})
+        write_json(self.directory / 'config.json', {'condition': 'H', 'reviewer': 'scripted', 'seed': 4})
         write_json(self.directory / 'intervention_summary.json', {
             'task_success': False, 'total_steps': 20,
             'outcomes': [{'source': 'human', 'recovered': True}, {'source': 'auto', 'recovered': False}],

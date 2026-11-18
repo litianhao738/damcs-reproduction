@@ -60,8 +60,11 @@ class CubeSimulation:
                     self.agents[response['id']].accept(response)
             # A just accepted repair gets its next execution before another LLM revision.
             if not had_pending or self.controller.pending is not None:
+                # Locked progress tasks set their agents' plans; those agents do not plan.
+                self.controller.prepare(self.agents, observations)
                 plans = [Plan.from_agent(agent) for agent in self.agents]
-                editable = [agent.id for agent in self.agents if not agent.review_paused]
+                editable = [agent.id for agent in self.agents
+                            if not agent.review_paused and agent.progress_task is None]
                 new = {plan.agent_id: plan for plan in await self.plan(observations, plans, editable)}
                 plans = [new.get(plan.agent_id, plan) for plan in plans]
                 rounds = []
@@ -72,13 +75,17 @@ class CubeSimulation:
                                        'targets': [asdict(target) for target in targets]})
                         if not targets or revision == self.repair_rounds:
                             break
-                        affected = sorted({agent_id for target in targets for agent_id in target.evidence_agents})
+                        affected = sorted({agent_id for target in targets for agent_id in target.evidence_agents
+                                           if agent_id in editable})
+                        if not affected:
+                            break
                         revised = await self.plan(observations, plans, affected, [asdict(target) for target in targets])
                         new = {plan.agent_id: plan for plan in revised}
                         plans = [new.get(plan.agent_id, plan) for plan in plans]
                     analysis = self.adapter.generate(plans, observations,
                                                      max_scope_agents=self.controller.search_agents,
-                                                     selection=self.controller.selection) \
+                                                     selection=self.controller.selection,
+                                                     editable_agents=set(editable)) \
                         if self.controller.mode in ('auto', 'human', 'suggest') else None
                 else:
                     analysis = None
@@ -128,6 +135,8 @@ def main():
         step_limit=args.step_num, timeout=args.review_timeout,
         pause_mode=args.pause_mode,
         evidence_mode=args.evidence_mode, revalidation=args.revalidation, environment='cube',
+        progress_mode=args.progress_mode, progress_commit=args.progress_commit == 'on',
+        slow_margin=args.slow_margin,
     )
     write_json(output / 'config.json', experiment_config(args, 'cube'))
     env = CoopBlockPush(grid_size=args.grid_size, num_agents=args.agent_num,

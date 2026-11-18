@@ -18,6 +18,37 @@ class ActionStatus(Enum):
     ALMOST_DONE = 1
     DONE = 2
     INTERRUPTED = 3
+
+
+# The "mechanisms only" control (table 2): an agent with ``llm_enabled = False`` gives
+# this idle plan every time and never calls a model, neither chat nor embeddings.
+IDLE_PLAN = {
+    "epsiode_number": 0, "timestep": 0, "past_events": "Language model switched off.",
+    "current_facing_direction": "grass", "current_inventory": [],
+    "collaboration": {
+        "target_agent_to_help": -1, "target_agent_need": "not_applicable", "help_method": "none",
+        "can_help_now": "failure", "being_helped_by_agent": -1, "help_method_by_agent": "none",
+        "change_in_plan": "none",
+    },
+    "reflection": {
+        "vision": [], "last_action": "noop", "last_action_result": "success",
+        "last_action_result_reflection": "none", "last_action_repeated_reflection": "none",
+    },
+    "goal": {
+        "ultimate_goal": "collect_diamond", "long_term_goal": "collect_diamond",
+        "long_term_goal_subgoals": "none", "long_term_goal_progress": "share",
+        "long_term_goal_status": "in_progress", "current_goal": "share",
+        "current_goal_reason": "Language model switched off.", "current_goal_status": "in_progress",
+    },
+    "action": {
+        "next_action": "noop", "next_action_reason": "Language model switched off.",
+        "next_action_prerequisites_status": "success", "next_action_prerequisites": "none",
+        "final_next_action": "noop", "final_next_action_reason": "Language model switched off.",
+        "final_next_action_status": "in_progress", "final_target_material_to_collect": "not_applicable",
+        "final_target_material_to_share": "not_applicable", "final_target_agent_id": -1,
+    },
+    "summary": "The language model is switched off; the agent waited.",
+}
     
 class Agent(AgentBase):
     """DAMCS agent implemented as an AgentScope agent.
@@ -42,6 +73,10 @@ class Agent(AgentBase):
         self.review_paused = False
         self.pending_plan_response = None
         self.intervention_notes = []
+        # Set while the agent runs a locked progress-repair task; it then skips planning.
+        self.progress_task = None
+        # False for the "mechanisms only" control: idle plans, no model calls (see IDLE_PLAN).
+        self.llm_enabled = True
         self.action_status = ActionStatus.DONE
         self.op = 'noop'
         self.action = 'noop'
@@ -91,6 +126,11 @@ class Agent(AgentBase):
         self.episode_timestep = episode_timestep
     
     def create_experience(self):
+        if not getattr(self, "llm_enabled", True):
+            # No memory retrieval or embeddings without a language model to read them.
+            self.experience = Experience(None, self.text_model, path=str(self.agent_dir))
+            self.context = self.wm_content = ""
+            return self.context
         # pre experience
         obs, step, env, info = self.obs, self.step, self.env, self.info
         self.experience = Experience(None, self.text_model, path=str(self.agent_dir))
@@ -156,6 +196,10 @@ class Agent(AgentBase):
         return self.context
 
     async def reply(self, msg):
+        if not getattr(self, "llm_enabled", True):
+            self.thoughts = ResponseEvent.model_validate({**IDLE_PLAN, "timestep": getattr(self, "step", 0)})
+            return Msg(name=self.name, content=self.thoughts.summary, role="assistant",
+                       metadata=self.thoughts.model_dump(mode="json"))
         context = msg.get_text_content()
         self.think_context = context
         inquiry = generate_inquiry(vision=str(self.agent_dir / f"{self.step}.png"),
@@ -191,7 +235,7 @@ class Agent(AgentBase):
 
     @staticmethod
     async def process_agent(agent, agents_contexts, info):
-        if agent.review_paused:
+        if agent.review_paused or getattr(agent, "progress_task", None) is not None:
             return {"id": agent.id, "thoughts": None}
         if agent.action_status != ActionStatus.IN_PROGRESS and not info[agent.id]['sleeping']:
             # Skip HumanAgent processing - they are removed from pipeline

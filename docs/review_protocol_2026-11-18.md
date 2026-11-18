@@ -2,7 +2,7 @@
 
 日期：2026-11-18（同日修订）。适用于表 1、表 3 中条件 H 的真人审阅。所有审阅者按同一份规程操作，否则不同人的结果无法比较。
 
-> **修订说明**：原 H1、H2 已合并为一个人审条件 H，因此不再需要轮换条件顺序。H 新增了"进度问题"请求（第 6 节）。条件名 H 和进度问题页面要等 [进度问题修复设计](progress_repair_design_2026-11-18.md) 实现后才能使用，在此之前不开始正式审阅。
+> **修订说明**：原 H1、H2 已合并为一个人审条件 H，因此不再需要轮换条件顺序。H 新增了"进度问题"请求（第 6 节），设计见 [进度问题修复设计](progress_repair_design_2026-11-18.md)。代码已实现，现在可以做练习局；正式审阅等负责人确认调参试跑完成后再开始。
 
 ## 1. 你在做什么
 
@@ -53,11 +53,8 @@ python scripts\run_experiments.py --model_profiles qwen --conditions H --seeds 9
 把命令里的种子、编号和结果目录换成自己的。表 1 只有一个人审条件 H，不需要轮换条件顺序。
 
 ```powershell
-# 表 1，Crafter
+# 表 1（只跑挖钻石）
 python scripts\run_experiments.py --model_profiles qwen --conditions H --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_crafter_human_R1
-
-# 表 1，CUBE
-python scripts\run_experiments.py --environment cube --agent_num 3 --step_num 30 --model_profiles qwen --conditions H --seeds 4 --repeats 2 --reviewer human --reviewer_id R1 --results_dir results\table1_cube_human_R1
 ```
 
 表 3 的模型顺序也要轮换，按负责人分配的顺序填写 `--model_profiles`。例如：

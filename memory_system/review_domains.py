@@ -2,6 +2,8 @@
 
 from .repair_scopes import build_repair_targets, generate_scope_candidates, verify_joint_repair
 from .coordination import diagnose
+from .progress_repair import CrafterProgress, achieved_milestones, crafter_task_plans, milestone_count, \
+    milestone_target
 from .repair_scopes import _JointModel
 from .review_evidence import (
     build_review_evidence, dependency_agents, evidence_facts, snapshot_to_json, snapshot_from_json,
@@ -23,12 +25,54 @@ class CrafterAdapter:
 
     @staticmethod
     def progress(info):
-        """Team progress for the stall signal: how many distinct achievements any agent has unlocked.
+        """Team progress for the stall signal: how many of the ten diamond-chain milestones are reached.
 
-        Repeating an achievement (collecting more wood) is not progress.
+        Side achievements (drinking, eating, waking up) and repeats are not progress.
         """
-        observations = info.values() if isinstance(info, dict) else info
-        return len({name for obs in observations for name, count in obs['achievements'].items() if count > 0})
+        return milestone_count(info)
+
+    # Progress problems (legal but slow plans); see progress_repair.
+    task_plans = staticmethod(crafter_task_plans)
+    milestone_target = staticmethod(milestone_target)
+
+    @staticmethod
+    def milestone_reached(milestone, info):
+        return milestone in achieved_milestones(info)
+
+    @staticmethod
+    def exact_effect(option, before, after):
+        return option["milestone"] in achieved_milestones(after)
+
+    @staticmethod
+    def goals(agents, responses):
+        """Each agent's current goal from its latest planning record."""
+        replies = {response["id"]: response for response in responses}
+        goals = {}
+        for agent in agents:
+            thoughts = replies.get(agent.id, {}).get("thoughts") or getattr(agent, "thoughts", None)
+            goal = getattr(getattr(thoughts, "goal", None), "current_goal", None)
+            if goal is not None:
+                goals[agent.id] = getattr(goal, "value", goal)
+        return goals
+
+    @staticmethod
+    def progress_analysis(plans, observations, goals, free_agents, slow_margin, stalled=False,
+                          skip=(), only=None, force=False):
+        return CrafterProgress(plans, observations, goals, free_agents, slow_margin).analyse(
+            stalled, skip, only, force)
+
+    @staticmethod
+    def apply_plan(agent, plan):
+        from .agent import ActionStatus  # imported here: the agent module loads the vision stack
+        agent.update_current_skill(plan.operation, plan.material, plan.item, plan.recipient)
+        agent.update_action_status(ActionStatus.IN_PROGRESS)
+
+    @staticmethod
+    def release_agent(agent):
+        from .agent import ActionStatus
+        # Plan afresh at the next step.
+        agent.update_action_status(ActionStatus.DONE)
+
     generate = staticmethod(generate_scope_candidates)
     verify = staticmethod(verify_joint_repair)
     dependencies = staticmethod(dependency_agents)

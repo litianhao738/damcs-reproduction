@@ -7,6 +7,8 @@ from typing import List
 from memory_system.utils import print_color
 from memory_system.llm_api import ResponseEvent, run_async
 from memory_system.coordination import Plan, coordinate
+from memory_system.experiments import CONDITIONS
+from memory_system.intervention import PROGRESS_MODES
 from memory_system.repair_scopes import generate_scope_candidates
 from agentscope.message import Msg
 import asyncio
@@ -374,7 +376,9 @@ class AgentThinkingProcessor:
                 scope_analysis = generate_scope_candidates(
                     [Plan(**plan) for plan in history[-1]["plans"]], observations,
                     max_scope_agents=scope_max_agents,
-                    editable_agents={agent.id for agent in ai_agents},
+                    # Agents running a locked progress task keep their plans.
+                    editable_agents={agent.id for agent in ai_agents
+                                     if getattr(agent, "progress_task", None) is None},
                     selection=scope_selection,
                 )
                 for response in agents_responses:
@@ -638,7 +642,23 @@ def get_arg_parser():
     parser.add_argument('--resume', action='store_true', default=False,
                         help='Crafter: continue from <results_dir>/checkpoint.pkl if present; refused when '
                              'the code changed since the checkpoint was written.')
-    parser.add_argument('--condition', choices=['custom', 'A', 'B', 'C', 'H1', 'H2'], default='custom')
+    parser.add_argument('--condition', choices=['custom', *CONDITIONS], default='custom',
+                        help='A, B, C: legality repair only, progress problems recorded; D: also repairs '
+                             'progress problems automatically; H: D with human review at critical moments.')
+    parser.add_argument('--progress_mode', choices=list(PROGRESS_MODES), default='off',
+                        help="Progress problems (all plans legal, next team milestone clearly slow): 'off', "
+                             "'log' (record only), 'auto' (apply the best option), 'human' (ask at critical "
+                             "moments). Set by --condition unless it is custom.")
+    parser.add_argument('--progress_commit', choices=['on', 'off'], default='on',
+                        help="'on' locks multi-step progress assignments until done; 'off' is the ablation "
+                             "that only writes them into the agents' context (default: on).")
+    parser.add_argument('--agent_llm', choices=['on', 'off'], default='on',
+                        help="'off' is the table-2 control 'mechanisms only': every agent gives an idle "
+                             "plan and no model is called (no chat, no embeddings); only the repair "
+                             "mechanisms act (default: on).")
+    parser.add_argument('--slow_margin', type=positive_int, default=None,
+                        help='Steps an option must save before a milestone counts as clearly slow. '
+                             'Default: 3%% of --step_num, at least 2 (10 of 350).')
     parser.add_argument('--seed', type=int, default=4)
     parser.add_argument('--repeat_id', type=int, default=0)
     parser.add_argument('--human_requests', type=int, default=None,

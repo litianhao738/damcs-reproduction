@@ -19,8 +19,12 @@ from urllib.parse import parse_qs, urlparse
 
 from .coordination import Plan
 from .intervention import may_vouch, write_json
+from .progress_text import PROBLEM_TYPE_ZH, TEMPLATE_ZH, milestone_zh, option_lines_zh
 from .repair_scopes import RepairTarget
 from .review_domains import get_review_adapter
+
+# The radio value for "keep the current plans" on a progress review.
+KEEP = "__keep__"
 
 
 STYLE = """body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px;color:#182333;background:#fff}
@@ -35,6 +39,7 @@ STATUS_NAMES = {
     "pending": "待审", "answered": "已回复，等待执行", "expired": "已超时", "timeout": "已超时",
     "accepted": "已采纳", "invalid": "复核未通过", "permission": "越权", "stale_plan": "计划已变化",
     "reject": "已跳过", "episode_ended": "本局已结束",
+    "kept": "已保持原计划", "stale_option": "所选方案已失效，改用自动方案",
 }
 
 SIGNAL_NAMES = {
@@ -201,6 +206,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
             opened = self.directory / f"{request_id}.opened.json"
             if not opened.exists():
                 write_json(opened, {"opened_at": time.time()})
+        if request.get("kind") == "progress":
+            return self.progress_page(request_id, request, state)
         proposed = {plan["agent_id"]: plan for plan in request["proposal"]}
         originals = {plan["agent_id"]: plan for plan in request["plans"]}
         fields = []
@@ -266,6 +273,51 @@ class ReviewHandler(BaseHTTPRequestHandler):
                         if is_open and remaining is not None else ''),
             script=REQUEST_SCRIPT if is_open and remaining is not None else '')
 
+    def progress_page(self, request_id, request, state):
+        """A progress problem: pick one listed option, keep the current plans, or skip."""
+        is_open = state["status"] == "pending"
+        disabled = '' if is_open else ' disabled'
+        signals = request.get("trigger_signals", {}).get(request["problem_id"], [])
+        reasons = "、".join(SIGNAL_NAMES.get(signal, signal) for signal in signals)
+        now = request.get("now_estimate")
+        rows = []
+        for index, option in enumerate(request["options"]):
+            checked = ' checked' if option["option_id"] == request["recommended"] else ''
+            label = '精确（这一步就能完成，已验证）' if option["exact"] else '估计（要走路，可能有偏差）'
+            lines = ''.join(f'<li>{escape(line)}</li>' for line in option_lines_zh(option))
+            rows.append(
+                f'<tr><td><input type="radio" name="option" value="{escape(option["option_id"])}"'
+                f' id="option{index}"{checked}{disabled}></td>'
+                f'<td><label for="option{index}">{escape(TEMPLATE_ZH.get(option["template"], option["template"]))}'
+                + ('（推荐）' if checked else '') + f'</label></td><td><ul>{lines}</ul></td>'
+                f'<td>{escape(str(option["estimate"]))} 步</td><td>{escape(label)}</td>'
+                f'<td>{escape(", ".join(map(str, option["agents"])))}</td></tr>')
+        rows.append(f'<tr><td><input type="radio" name="option" value="{KEEP}" id="keep"{disabled}></td>'
+                    '<td><label for="keep">不改</label></td><td>保持当前计划</td>'
+                    f'<td>{escape(str(now)) + " 步" if now is not None else "估不出"}</td><td></td><td></td></tr>')
+        remaining = state["remaining_seconds"]
+        clock = (f'<p>剩余时间：<span id="countdown" class="countdown">{int(remaining + 0.999)} 秒</span>'
+                 f'（超时后自动按推荐方案处理）</p>') if is_open and remaining is not None else ''
+        ended = '' if is_open else f'此请求已结束：{state["status_name"]}。'
+        self.page(
+            f'<h1>{escape(request_id)} · 第 {request["step"]} 步 · 进度问题</h1>{clock}'
+            f'<p id="ended" class="banner alert"{"" if ended else " hidden"}>{escape(ended)}</p>'
+            f'<p>里程碑：<b>{escape(milestone_zh(request["milestone"]))}</b>。'
+            f'{escape(PROBLEM_TYPE_ZH.get(request["problem_type"], ""))}。'
+            f'按当前计划估计还要 {escape(str(now)) + " 步" if now is not None else "很久（没有人在做）"}。</p>'
+            + (f'<p class="note">为什么问你：{escape(reasons)}</p>' if reasons else '')
+            + f'<p>等待的 Agent：{request["pause_agents"]}。</p>'
+            '<p class="note">估计只算了走路和动作的步数，没有考虑怪物、岩浆、生命值、原计划马上就能完成等情况。'
+            '你看到这些情况时再换方案；拿不准就跳过。</p>'
+            f'<form id="reply" method="post" action="/respond"><input type="hidden" name="id" value="{escape(request_id)}">'
+            '<table><tr><th></th><th>方案</th><th>具体内容</th><th>估计</th><th>依据</th><th>改动的 Agent</th></tr>'
+            + ''.join(rows) + f'</table><button name="decision" value="choose"{disabled}>提交所选</button>'
+            f'<button name="decision" value="reject"{disabled}>跳过（按推荐方案自动处理）</button></form>',
+            title=f'{request_id} · 进度审阅',
+            attributes=(f' data-request="{escape(request_id)}" data-run="{escape(self.run)}"'
+                        f' data-remaining="{remaining}"' if is_open and remaining is not None else ''),
+            script=REQUEST_SCRIPT if is_open and remaining is not None else '')
+
     def do_POST(self):
         fields = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode("utf-8"))
         request_id, decision = fields["id"][0], fields["decision"][0]
@@ -275,6 +327,19 @@ class ReviewHandler(BaseHTTPRequestHandler):
             # A late reply would be ignored by the runner anyway; say so instead of storing it.
             return self.page(f'<h1>此请求已结束：{escape(state["status_name"])}</h1>'
                              '<p>这次回复没有被采用。</p><a href="/">返回审阅列表</a>', status=409)
+        if request.get("kind") == "progress":
+            choice = fields.get("option", [request["recommended"]])[0]
+            if decision == "choose" and choice == KEEP:
+                decision = "keep"
+            opened = self.directory / f"{request_id}.opened.json"
+            started = json.loads(opened.read_text(encoding="utf-8"))["opened_at"] if opened.exists() else time.time()
+            write_json(self.directory / f"{request_id}.response.json", {
+                "request_id": request_id, "decision": decision,
+                "option_id": choice if decision == "choose" else None,
+                "read_seconds": time.time() - started, "provider": "human_web",
+            })
+            return self.page('<h1>回复已提交</h1><p>执行器会按当前状态重新核对所选方案，并记录实际结果。</p>'
+                             '<p><a href="/">返回审阅列表</a>，有新请求时会再次提醒。</p>')
         edits = request["proposal"] if decision == "approve" else [
             request["domains"][str(agent_id)][int(fields[f"agent_{agent_id}"][0])]
             for agent_id in request["edit_agents"]

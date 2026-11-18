@@ -130,6 +130,9 @@ class CompleteMulitAgentSimulation:
                 self.agent_state_manager.update_all_agent_states(
                     self.agents, obs, _step, self.env, info, episode_number
                 )
+                if not done and self.intervention is not None:
+                    # Locked progress tasks set their agents' plans before anyone plans.
+                    self.intervention.prepare(self.agents, dict(enumerate(info)))
                 if not done:
                     agents_with_new_thought = self.agent_state_manager.identify_agents_needing_thought(self.agents, info)
                     agents_contexts = self.simulation_context_manager.create_agent_contexts(self.agents, info)
@@ -286,6 +289,9 @@ def main():
                 human_agent_ids=human_agent_ids, n_players=agent_num,
                 results_dir=round_results_dir,
             )
+            for agent in agents:
+                # The "mechanisms only" control: idle plans, no model calls.
+                agent.llm_enabled = args.agent_llm == 'on'
             round_global_map_dir = global_map_dir
             if global_map_dir and num_rounds > 1:
                 round_global_map_dir = os.path.join(
@@ -305,7 +311,8 @@ def main():
                 review_trigger=args.review_trigger, review_cooldown=args.review_cooldown, stall_steps=args.stall_steps,
                 stall_fraction=args.stall_fraction, step_limit=num_steps,
                 timeout=args.review_timeout, pause_mode=args.pause_mode, evidence_mode=args.evidence_mode,
-                revalidation=args.revalidation,
+                revalidation=args.revalidation, progress_mode=args.progress_mode,
+                progress_commit=args.progress_commit == 'on', slow_margin=args.slow_margin,
             )
             write_json(round_dir / 'config.json', config)
         review_server = ReviewServer(intervention.review_dir, args.review_port) \

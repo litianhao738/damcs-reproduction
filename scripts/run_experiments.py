@@ -1,8 +1,12 @@
 """Sequential paired-seed experiment matrix and episode-level result export.
 
+Conditions: A, B, C (legality repair; progress problems recorded only), D (adds
+automatic progress repair) and H (D with human review at critical moments).
+
 Suites:
   main       conditions x seeds x repeats (tables 1 and 3)
-  ablation   the fixed component ablations of table 2 (ignores --conditions)
+  ablation   table 2: remove one module at a time from D, plus D with the LLM off (ignores --conditions)
+  appendix   design choices inside each module (appendix table; ignores --conditions)
   capacity / evidence / waiting   earlier single-factor sweeps
 With --model_profiles, every run is repeated per named profile from
 config/model_profiles.json (table 3). Keys are resolved only when a run starts.
@@ -34,17 +38,26 @@ def positive_int(value):
     return number
 
 
-# Table 2: each row changes one component of the full system and nothing else.
-# The automatic rows start from C; the review rows start from H2 with a scripted reviewer.
+# Table 2: remove one module at a time from D, the automatic full system. The rows
+# "- progress repair" (= C) and "- human review" (H vs D) reuse table 1 and are not run
+# here. D-no-scope keeps the scope search in 'suggest' mode, so the legality problems
+# it would have repaired are still counted, but nothing is applied. D-no-llm switches
+# every agent's language model off: what the mechanisms do on their own.
 ABLATIONS = [
-    ('C-no-replan', 'custom', {'coordination_mode': 'repair', 'repair_rounds': 0,
-                               'scope_mode': 'auto', 'review_strategy': 'verified'}),
+    ('D-no-replan', 'custom', {'coordination_mode': 'repair', 'repair_rounds': 0, 'scope_mode': 'auto',
+                               'review_strategy': 'verified', 'progress_mode': 'auto'}),
+    ('D-no-scope', 'custom', {'coordination_mode': 'repair', 'repair_rounds': 2, 'scope_mode': 'suggest',
+                              'review_strategy': 'verified', 'progress_mode': 'auto'}),
+    ('D-no-llm', 'D', {'agent_llm': 'off'}),
+]
+
+# Appendix: design choices inside each module, each changing one choice and nothing else.
+APPENDIX = [
     ('C-any-scope', 'C', {'scope_selection': 'any'}),
-    ('H2script', 'H2', {'reviewer': 'scripted'}),
-    ('H2script-global-wait', 'H2', {'reviewer': 'scripted', 'pause_mode': 'global'}),
-    ('H2script-no-wait', 'H2', {'reviewer': 'scripted', 'pause_mode': 'none'}),
-    ('H2script-full-recheck', 'H2', {'reviewer': 'scripted', 'revalidation': 'full'}),
-    ('H2script-no-recheck', 'H2', {'reviewer': 'scripted', 'revalidation': 'none'}),
+    ('D-no-commit', 'D', {'progress_commit': 'off'}),
+    ('Hscript', 'H', {'reviewer': 'scripted'}),
+    ('Hscript-global-wait', 'H', {'reviewer': 'scripted', 'pause_mode': 'global'}),
+    ('Hscript-no-recheck', 'H', {'reviewer': 'scripted', 'revalidation': 'none'}),
 ]
 
 # Crafter milestone columns written by run.py, in task order.
@@ -55,9 +68,11 @@ MILESTONES = ['Collect wood', 'Place table', 'Make wood pickaxe', 'Collect stone
 def variants(args):
     base = {'scope_max_agents': args.scope_max_agents, 'evidence_mode': args.evidence_mode,
             'pause_mode': args.pause_mode, 'revalidation': args.revalidation,
-            'scope_selection': 'minimal', 'reviewer': args.reviewer}
-    if args.suite == 'ablation':
-        return [(tag, condition, {**base, **override}) for tag, condition, override in ABLATIONS]
+            'scope_selection': 'minimal', 'reviewer': args.reviewer, 'progress_commit': 'on',
+            'agent_llm': 'on'}
+    if args.suite in ('ablation', 'appendix'):
+        rows = ABLATIONS if args.suite == 'ablation' else APPENDIX
+        return [(tag, condition, {**base, **override}) for tag, condition, override in rows]
     if args.suite == 'capacity':
         settings = [{**base, 'scope_max_agents': k} for k in (1, 2, None)]
     elif args.suite == 'evidence':
@@ -80,7 +95,9 @@ def build_matrix(args):
         parts = ([profile] if profile else []) + [
             tag, f'seed{seed}', f'r{repeat}', f'k{"all" if k is None else k}',
             s['evidence_mode'], s['pause_mode'], s['revalidation']]
-        label = '_'.join(parts + (['any'] if s['scope_selection'] == 'any' else []))
+        label = '_'.join(parts + (['any'] if s['scope_selection'] == 'any' else [])
+                         + (['nocommit'] if s['progress_commit'] == 'off' else [])
+                         + (['nollm'] if s['agent_llm'] == 'off' else []))
         directory = Path(args.results_dir).resolve() / label
         command = [sys.executable, '-B', str(ROOT / ('run_cube.py' if args.environment == 'cube' else 'run.py')),
                    '--condition', condition, '--seed', str(seed), '--repeat_id', str(repeat),
@@ -93,6 +110,8 @@ def build_matrix(args):
                    *(['--stall_steps', str(args.stall_steps)] if args.stall_steps is not None else []),
                    '--evidence_mode', s['evidence_mode'], '--pause_mode', s['pause_mode'],
                    '--revalidation', s['revalidation'], '--scope_selection', s['scope_selection'],
+                   '--progress_commit', s['progress_commit'], '--agent_llm', s['agent_llm'],
+                   *(['--slow_margin', str(args.slow_margin)] if args.slow_margin is not None else []),
                    '--reviewer', s['reviewer'], '--reviewer_id', args.reviewer_id,
                    '--review_timeout', str(args.review_timeout),
                    '--review_step_seconds', str(args.review_step_seconds),
@@ -100,7 +119,8 @@ def build_matrix(args):
                    '--results_dir', str(directory), '--no_plot']
         if condition == 'custom':
             command += ['--coordination_mode', s['coordination_mode'], '--repair_rounds', str(s['repair_rounds']),
-                        '--scope_mode', s['scope_mode'], '--review_strategy', s['review_strategy']]
+                        '--scope_mode', s['scope_mode'], '--review_strategy', s['review_strategy'],
+                        '--progress_mode', s['progress_mode']]
         if args.environment == 'cube':
             command += ['--grid_size', str(args.grid_size), '--block_specs', args.block_specs]
         else:
@@ -113,7 +133,9 @@ def build_matrix(args):
                'pause_mode': s['pause_mode'], 'revalidation': s['revalidation'],
                'human_requests': args.human_requests, 'review_trigger': args.review_trigger,
                'review_cooldown': args.review_cooldown, 'stall_steps': args.stall_steps,
-               'stall_fraction': args.stall_fraction, 'step_limit': args.step_num}
+               'stall_fraction': args.stall_fraction, 'step_limit': args.step_num,
+               'progress_commit': s['progress_commit'], 'agent_llm': s['agent_llm'],
+               'slow_margin_arg': args.slow_margin}
         if profile:
             run.update(profile_record(profile, settings_file))
         matrix.append(run)
@@ -162,6 +184,8 @@ def summarize_run(directory, step_limit=None):
                  if event['event'] == 'planning_completed' and event.get('scope_analysis') is not None]
     target_snapshots = [analysis for analysis in analyses if analysis['targets']]
     reviews = [read_json(path) for path in sorted((directory / 'reviews').glob('review_[0-9][0-9][0-9][0-9].json'))]
+    # Evidence, witnesses and field permissions exist only for legality reviews.
+    legal_reviews = [review for review in reviews if review.get('kind', 'legal') == 'legal']
     replies = [event for event in events if event['event'] == 'review_resolved']
     applied = [event for event in events if event['event'] == 'plan_applied']
     skipped = Counter(event.get('reason') for event in events if event['event'] == 'review_skipped')
@@ -189,10 +213,10 @@ def summarize_run(directory, step_limit=None):
         'selected_snapshots': sum(analysis['selected'] is not None for analysis in target_snapshots),
         'assignments_evaluated': sum(analysis['assignments_evaluated'] for analysis in analyses),
         'search_seconds': sum(analysis['elapsed_seconds'] for analysis in analyses),
-        'reviews_with_verified_witness': sum(review['evidence']['sufficient'] for review in reviews),
+        'reviews_with_verified_witness': sum(review['evidence']['sufficient'] for review in legal_reviews),
         'review_agent_slots': sum(len(review['edit_agents']) for review in reviews),
-        'evidence_groups_before': sum(review['evidence']['fact_groups_before'] for review in reviews),
-        'evidence_groups_after': sum(review['evidence']['fact_groups_after'] for review in reviews),
+        'evidence_groups_before': sum(review['evidence']['fact_groups_before'] for review in legal_reviews),
+        'evidence_groups_after': sum(review['evidence']['fact_groups_after'] for review in legal_reviews),
         'real_human_replies': sum(reply.get('provider') == 'human_web' for reply in replies),
         'scripted_replies': sum(reply.get('provider') == 'scripted' for reply in replies),
         'invalid_replies': sum(reply['status'] in ('invalid', 'permission', 'stale_plan') for reply in replies),
@@ -210,6 +234,26 @@ def summarize_run(directory, step_limit=None):
     row.update({f'reply_{status}': count for status, count in
                 Counter(reply['status'] for reply in replies).items()})
     row.update({f'validation_{key}': value for key, value in summary.get('validation_counts', {}).items()})
+    # Progress repair (legal but slow plans).
+    row['requests_legal'] = sum(review.get('kind', 'legal') == 'legal' for review in reviews)
+    row['requests_progress'] = sum(review.get('kind') == 'progress' for review in reviews)
+    row.update({key: summary.get(key) for key in (
+        'progress_mode', 'progress_commit', 'slow_margin', 'progress_target_steps', 'progress_commits',
+        'progress_exact_commits', 'progress_exact_success', 'progress_tasks', 'progress_tasks_completed',
+        'stall_steps_total', 'committed_agent_steps', 'progress_seconds')})
+    for field, prefix in (('progress_targets_by_type', 'progress_targets_'),
+                          ('progress_commits_by_template', 'progress_commits_'),
+                          ('progress_commits_by_source', 'progress_source_'),
+                          ('progress_task_releases', 'progress_release_'),
+                          ('progress_replies', 'progress_reply_')):
+        row.update({prefix + key: value for key, value in (summary.get(field) or {}).items()})
+    errors = summary.get('progress_estimate_errors') or []
+    row['progress_estimate_error_mean'] = sum(errors) / len(errors) if errors else None
+    row['progress_estimate_error_median'] = sorted(errors)[len(errors) // 2] if errors else None
+    row['progress_exact_success_rate'] = (summary['progress_exact_success'] / summary['progress_exact_commits']
+                                          if summary.get('progress_exact_commits') else None)
+    row['progress_task_completion_rate'] = (summary['progress_tasks_completed'] / summary['progress_tasks']
+                                            if summary.get('progress_tasks') else None)
     row.update(milestone_steps(directory, step_limit))
     return row
 
@@ -229,7 +273,8 @@ def get_parser():
     parser.add_argument('--conditions', nargs='+', choices=list(CONDITIONS), default=list(CONDITIONS))
     parser.add_argument('--seeds', type=int, nargs='+', default=[4, 5, 6])
     parser.add_argument('--repeats', type=int, default=1)
-    parser.add_argument('--suite', choices=['main', 'ablation', 'capacity', 'evidence', 'waiting'], default='main')
+    parser.add_argument('--suite', choices=['main', 'ablation', 'appendix', 'capacity', 'evidence', 'waiting'],
+                        default='main')
     parser.add_argument('--model_profiles', nargs='+', default=None,
                         help='Named profiles from config/model_profiles.json; default: the current environment.')
     parser.add_argument('--agent_num', type=int, default=6)
@@ -249,6 +294,9 @@ def get_parser():
                         help='Share of the episode length without team progress before open problems count as critical.')
     parser.add_argument('--stall_steps', type=int, default=None,
                         help='Fixed stall window in steps; overrides --stall_fraction.')
+    parser.add_argument('--slow_margin', type=positive_int, default=None,
+                        help='Steps an option must save before a milestone counts as clearly slow '
+                             '(default: 3%% of --step_num, at least 2).')
     parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='local')
     parser.add_argument('--evidence_mode', choices=['full', 'compact'], default='compact')
     parser.add_argument('--revalidation', choices=['incremental', 'full', 'none'], default='incremental')

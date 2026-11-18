@@ -36,6 +36,9 @@ class CubeAgent(AgentBase):
         self.constraint_checks = []
         self.step = 0
         self.history = []
+        self.intervention_notes = []
+        # Set while the agent runs a locked progress-repair task; it then skips planning.
+        self.progress_task = None
 
     async def reply(self, msg):
         """Ask for one action; retry invalid JSON with the error, as the Crafter agent does.

@@ -9,22 +9,27 @@ import subprocess
 from .intervention import write_json
 
 
+# (coordination_mode, repair_rounds, scope_mode, review_strategy, progress_mode).
+# Each condition adds one thing to the previous one: replanning (B), verified legality
+# repair (C), automatic progress repair for legal but slow plans (D), and a person
+# choosing at critical moments (H). A, B and C record progress problems without acting.
+# History: on 2026-11-18 the problem-owner review (H1) and the verified-scope review (H2)
+# were merged into H, which keeps H2's review interface; the owner-versus-scope question
+# moved to an offline comparison (scripts/evaluate_frozen_scopes.py). Older results
+# named H2 correspond to H without progress repair.
 CONDITIONS = {
-    'A': ('diagnose', 0, 'off', 'verified'),
-    'B': ('repair', 2, 'off', 'verified'),
-    'C': ('repair', 2, 'auto', 'verified'),
-    # Human review opens either the problem owner (H1) or the verified repair scope (H2).
-    # On 2026-11-17 the old related-group condition (then called H1, all fields open)
-    # was dropped because its free-form group edits were hard to quantify, and the
-    # problem-owner condition was renamed from H0 to H1.
-    'H1': ('repair', 2, 'human', 'owner'),
-    'H2': ('repair', 2, 'human', 'verified'),
+    'A': ('diagnose', 0, 'off', 'verified', 'log'),
+    'B': ('repair', 2, 'off', 'verified', 'log'),
+    'C': ('repair', 2, 'auto', 'verified', 'log'),
+    'D': ('repair', 2, 'auto', 'verified', 'auto'),
+    'H': ('repair', 2, 'human', 'verified', 'human'),
 }
 
 
 def apply_condition(args):
     if args.condition != 'custom':
-        args.coordination_mode, args.repair_rounds, args.scope_mode, args.review_strategy = CONDITIONS[args.condition]
+        (args.coordination_mode, args.repair_rounds, args.scope_mode, args.review_strategy,
+         args.progress_mode) = CONDITIONS[args.condition]
 
 
 def experiment_config(args, environment):
@@ -54,7 +59,10 @@ def experiment_config(args, environment):
 
 
 class ScriptedReviewer:
-    """Approve/reject after a fixed tick delay; never counted as human data."""
+    """Approve/reject after a fixed tick delay; never counted as human data.
+
+    For a progress problem, 'approve' takes the recommended option and 'reject' skips
+    (the automatic choice applies)."""
 
     def __init__(self, decision='approve', delay_steps=2):
         self.decision = decision

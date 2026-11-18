@@ -7,6 +7,7 @@ from time import perf_counter
 
 from third_party.coop2_cube.env.env import Block, CoopBlockPush
 from .coordination import Plan
+from .progress_cube import CubeProgress, block_of, cube_state, cube_task_plans, delivered
 from .repair_scopes import (
     SCOPE_SELECTIONS, RepairTarget, ScopeCandidate, ScopeSearch, select_any_repair, select_repair_scope,
 )
@@ -53,6 +54,39 @@ class CubeAdapter:
     def progress(info):
         """Team progress for the stall signal: the team score."""
         return next(iter(info.values() if isinstance(info, dict) else info))['cube']['team_score']
+
+    # Progress problems (legal but slow plans); see progress_cube.
+    task_plans = staticmethod(cube_task_plans)
+    milestone_reached = staticmethod(delivered)
+
+    @staticmethod
+    def milestone_target(milestone):
+        return {'kind': 'push', 'subject': milestone}
+
+    @staticmethod
+    def exact_effect(option, before, after):
+        events = cube_state(after).get('last_step_events') or {}
+        block_id = block_of(option['milestone'])
+        return delivered(option['milestone'], after) or any(
+            event['block_id'] == block_id for event in events.get('successful_pushes', []))
+
+    @staticmethod
+    def goals(agents, responses):
+        return {}
+
+    @staticmethod
+    def progress_analysis(plans, observations, goals, free_agents, slow_margin, stalled=False,
+                          skip=(), only=None, force=False):
+        return CubeProgress(plans, observations, free_agents, slow_margin, _project).analyse(
+            stalled, skip, only, force)
+
+    @staticmethod
+    def apply_plan(agent, plan):
+        agent.op = plan.operation
+
+    @staticmethod
+    def release_agent(agent):
+        pass
 
     def moves(self, plans, observations):
         return {}
