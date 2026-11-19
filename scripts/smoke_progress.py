@@ -23,6 +23,7 @@ from memory_system.cube_adapter import CubeAdapter, observations_from_infos
 from memory_system.cube_agent import CubeAgent
 from memory_system.intervention import InterventionController, slow_margin_for, write_json
 from memory_system.llm_api import ResponseEvent, run_async
+from crafter import constants
 from memory_system.progress_repair import STAGES_AFTER, CrafterProgress, crafter_task_plans, frontier
 from memory_system.repair_scopes import generate_scope_candidates
 from memory_system.review_domains import CrafterAdapter
@@ -135,6 +136,19 @@ class CrafterProgressChecks(unittest.TestCase):
         # Real Crafter: the share happens first, so Agent 2 makes the pickaxe in this very step.
         self.fixture.execute(self.plans, [Plan(**data) for data in best['first_plans'].values()])
         self.assertEqual(self.players[2].achievements['make_stone_pickaxe'], 1)
+
+    def test_cost_counts_only_agents_drawn_away_from_their_own_work(self):
+        # Pilot run: Agent 0 was already making the iron pickaxe; building a furnace where it stood
+        # took 2 steps, but the per-agent penalty ranked a 7-step walk to the furnace first.
+        self.stone_pickaxe_scene()
+        self.players[0].inventory['wood'] = 1 + constants.place['table']['uses']['wood']
+        obs = self.fixture.observations()
+        options = CrafterProgress(self.plans, obs, self.goals, {0, 1, 2}, slow_margin=4).analyse(
+            only=['make_stone_pickaxe'], force=True)['problems'][0]['options']
+        here = next(option for option in options if option['template'] == 'build_here' and option['executor'] == 0)
+        self.assertEqual((here['agents'], here['cost']), ([0], here['estimate']))
+        handover = next(option for option in options if option['executor'] == 2 and option['exact'])
+        self.assertEqual((handover['agents'], handover['cost']), ([0, 2], handover['estimate'] + 2 * 4))
 
     def test_a_b_c_only_record_progress_problems(self):
         self.stone_pickaxe_scene()

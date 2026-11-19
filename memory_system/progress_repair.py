@@ -480,7 +480,10 @@ class CrafterProgress:
         return {
             "option_id": "|".join(parts), "template": template, "milestone": milestone, "executor": executor,
             "agents": sorted(changed), "interrupted": interrupted, "estimate": estimate, "exact": exact,
-            "cost": estimate + self.margin * len(changed),
+            # Each agent drawn away from its own work costs ``margin`` steps. An executor already
+            # working on the milestone is not drawn away, even when it builds a facility on the
+            # spot: in a pilot run that penalty ranked a 7-step walk above a 2-step build here.
+            "cost": estimate + self.margin * len(changed - ({executor} if executor in working else set())),
             "givers": {str(agent_id): items for agent_id, items in sorted(givers.items())},
             "gatherers": {str(agent_id): items for agent_id, items in sorted(gatherers.items())},
             "own": own, "first_plans": {str(agent_id): asdict(plan) for agent_id, plan in first_plans.items()}
