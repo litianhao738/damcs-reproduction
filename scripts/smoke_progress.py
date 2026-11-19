@@ -323,6 +323,55 @@ class CrafterProgressChecks(unittest.TestCase):
         self.assertEqual(next(event for event in self.events() if event['event'] == 'progress_prestaged')
                          ['milestone'], 'collect_iron')
 
+    def test_prestage_trusts_routes_not_stated_goals(self):
+        # Pilot run: one agent wrote "collect_diamond" as its goal all game, also while locked on
+        # the walk to iron, so the diamond was never prepared.
+        self.iron_scene()
+        goals = {0: 'collect_stone', 1: 'collect_iron', 2: 'collect_iron'}
+        proposals = CrafterProgress(self.plans, self.obs, goals, {1, 2}, slow_margin=4).prestage()
+        self.assertEqual([(proposal['milestone'], proposal['agent']) for proposal in proposals],
+                         [('collect_iron', 1)])
+        walking = [self.plans[0], self.plans[1], plan(2, 'Navigator', 'iron')]
+        self.assertEqual(CrafterProgress(walking, self.obs, goals, {1}, slow_margin=4).prestage(), [])
+        # A locked agent's stated goal is stale and left out of every analysis.
+        controller = self.controller(mode='auto', progress_mode='auto')
+        controller.tasks[1] = {'agent_id': 1, 'milestone': 'collect_stone', 'macros': [], 'index': 0}
+        self.assertEqual(set(controller._goals(self.agents, self.replies())), {0, 2})
+
+    def test_h_keeps_the_agent_sent_ahead_waiting_until_the_review_resolves(self):
+        # Pilot run: the stone pickaxe was made, the walk to iron ended, and while the reviewer
+        # chose who collects the iron, the agent walked away from it for three steps.
+        self.iron_scene()
+        controller = self.controller(mode='human', progress_mode='human', review_trigger='all')
+        self.plan_step(controller)
+        self.assertEqual(controller.tasks[1]['prestage'], 'collect_iron')
+        self.reach('collect_stone', 'make_stone_pickaxe')
+        self.players[0].inventory['stone_pickaxe'] = 1
+        self.transition(controller)
+        self.assertEqual((controller.tasks, dict(controller.prestage_releases)), ({}, {'milestone_reached': 1}))
+        self.plan_step(controller)
+        request = json.loads((controller.review_dir / 'review_0001.json').read_text(encoding='utf-8'))
+        self.assertEqual(request['milestone'], 'collect_iron')
+        held = controller.tasks[1]
+        self.assertEqual((held['hold_for'], held['milestone'], held['macros']),
+                         ('review_0001', 'collect_iron', [['approach', 'iron']]))
+        current = Plan.from_agent(self.agents[1])
+        self.assertEqual((current.operation, current.material), ('Navigator', 'iron'))
+        board = TeamBoard(controller).render(self.agents, self.obs, step=1)[0]
+        self.assertIn('a reviewer is choosing who collects', board)
+        self.transition(controller)
+        controller.prepare(self.agents, self.obs)
+        self.assertEqual(self.agents[1].progress_task, held['option_id'])
+        # The reply frees the agent first, so the chosen option can still use it.
+        chosen = next(option for option in request['options'] if option['executor'] == 1)
+        self.respond(controller, decision='choose', option_id=chosen['option_id'])
+        self.assertEqual(controller.tasks[1]['option_id'], chosen['option_id'])
+        self.assertNotIn('hold_for', controller.tasks[1])
+        self.assertEqual(dict(controller.prestage_releases), {'milestone_reached': 1, 'review_resolved': 1})
+        self.assertNotIn('stale', controller.progress_replies)
+        summary = controller.finish(list(self.obs.values()), 3, 'step_limit')
+        self.assertEqual(summary['progress_prestage_held'], 1)
+
     def test_prestage_leaves_alone_the_agents_a_waiting_problem_needs(self):
         # Coal takes Agents 0 and 1; iron's best option also needs Agent 1, so iron waits a step.
         # Agent 2, which that iron option would use, must not be sent ahead elsewhere meanwhile.

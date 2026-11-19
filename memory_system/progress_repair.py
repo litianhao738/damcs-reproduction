@@ -544,7 +544,9 @@ class CrafterProgress:
         One agent per material, chosen among free agents not working on a frontier
         milestone, nearest first. Nobody is sent when the walk is shorter than
         ``slow_margin``, when an agent is already that close, or when an agent is heading
-        there (its goal is the milestone, or it is navigating to the material).
+        there. Only actual routes count (navigating to or collecting the material), not
+        stated goals: in a pilot run one agent wrote "collect_diamond" as its goal all game,
+        also while locked on the walk to iron, and the diamond was never prepared.
         ``skip``: milestones already being prepared.
         """
         done = achieved_milestones(self.observations)
@@ -563,9 +565,8 @@ class CrafterProgress:
                 continue
             walk = {agent_id: self.board.face_steps(self._position(agent_id), self._facing(agent_id), material)[0]
                     for agent_id in self.observations if self._active(agent_id)}
-            heading = any(self.goals.get(agent_id) == milestone
-                          or (plan.operation == "Navigator" and plan.material == material)
-                          for agent_id, plan in self.plans.items())
+            heading = any(plan.operation in ("Navigator", "do") and plan.material == material
+                          and self._active(agent_id) for agent_id, plan in self.plans.items())
             if heading or any(steps < self.margin for steps in walk.values()):
                 continue
             candidates = [agent_id for agent_id in sorted(self.free - busy - used) if walk.get(agent_id, INF) < INF]

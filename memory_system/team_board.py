@@ -99,7 +99,10 @@ class TeamBoard:
             parts.append(f"goal: {goal}")
         task = tasks.get(agent.id)
         plan = describe_plan(Plan.from_agent(agent))
-        if task and task.get("prestage"):
+        if task and task.get("hold_for"):
+            parts.append(f"team task: wait near {task['macros'][0][1]} for {task['prestage']} "
+                         f"(the tool is ready; a reviewer is choosing who collects): {plan}")
+        elif task and task.get("prestage"):
             parts.append(f"team task: wait near {task['macros'][0][1]} for {task['prestage']} "
                          f"(until {task['milestone']} is done): {plan}")
         elif task:

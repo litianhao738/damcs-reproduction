@@ -166,7 +166,12 @@ class InterventionController:
         ``progress_prestage`` (with ``auto`` or ``human`` progress repair): send a free
         agent ahead to a far material whose tool is about to be made, as a locked task
         that ends when the tool exists (``CrafterProgress.prestage``). Applied without
-        asking, in C and H alike."""
+        asking, in C and H alike. When the tool is made and H then asks who collects the
+        material, that agent waits at the material until the reply (it is in the options)
+        instead of following its own plan away from it.
+
+        Goals stated by locked agents are left out of every analysis: such an agent does
+        not plan for itself, so its last stated goal is stale."""
         if revalidation not in ("incremental", "full", "none"):
             raise ValueError("revalidation must be 'incremental', 'full' or 'none'")
         if review_trigger not in REVIEW_TRIGGERS:
@@ -205,6 +210,8 @@ class InterventionController:
         self.progress_mode, self.progress_commit = progress_mode, progress_commit
         self.progress_pause, self.progress_prestage = progress_pause, progress_prestage
         self.prestage_releases = Counter()
+        # milestone -> prestage task that just ended because its tool was made (this step only)
+        self.prestage_ready = {}
         self.slow_margin = slow_margin_for(slow_margin, step_limit)
         self.tasks = {}            # agent id -> locked task
         self.progress_hold = {}    # milestone -> step until which a reviewer's "keep" holds
@@ -626,6 +633,8 @@ class InterventionController:
         if task.get("prestage"):
             # Sent ahead: "milestone_reached" means the awaited tool now exists.
             self.prestage_releases[reason] += 1
+            if reason == "milestone_reached" and not task.get("hold_for"):
+                self.prestage_ready[task["prestage"]] = task
         else:
             self.task_releases[reason] += 1
             if reason in ("milestone_reached", "completed"):
@@ -643,6 +652,11 @@ class InterventionController:
                 if agent.id in replies and not getattr(agent, "is_human", False) and not agent.review_paused
                 and agent.id not in self.tasks and "plan_override" not in replies[agent.id]}
 
+    def _goals(self, agents, responses):
+        """Stated goals of agents that plan for themselves; a locked agent's last goal is stale."""
+        return {agent_id: goal for agent_id, goal in self.adapter.goals(agents, responses).items()
+                if agent_id not in self.tasks}
+
     def _progress_analysis(self, agents, observations, responses, plans, **options):
         started = time.perf_counter()
         step = agents[0].step
@@ -651,7 +665,7 @@ class InterventionController:
         if self.pending is not None and self.pending.get("kind") == "progress":
             handled.add(self.pending["milestone"])  # waits for the reviewer
         analysis = self.adapter.progress_analysis(
-            plans, observations, self.adapter.goals(agents, responses), self._free_agents(agents, responses),
+            plans, observations, self._goals(agents, responses), self._free_agents(agents, responses),
             self.slow_margin, stalled=step - self.last_progress_step >= self.stall_steps, skip=handled, **options)
         self.progress_seconds += time.perf_counter() - started
         return analysis
@@ -682,12 +696,45 @@ class InterventionController:
             if self.progress_mode == "human" and self.pending is None:
                 skipped = self._progress_request(agents, observations, plans, problem, options)
                 if skipped is None:
+                    self._hold_prestaged(agents, observations, responses, problem["milestone"])
                     break  # a review is open; the rest waits for the next step
                 self.event("review_skipped", step, reason=skipped, review_kind="progress", milestone=problem["milestone"])
             self._apply_progress(agents, observations, responses, plans, options[0], "auto")
             used |= option_agents(options[0])
+        self.prestage_ready.clear()
         if self.progress_prestage:
             self._prestage(agents, observations, responses, effective_plans(responses, plans), used | reserved)
+
+    def _hold_prestaged(self, agents, observations, responses, milestone):
+        """Keep the agent sent ahead for ``milestone`` waiting at the material while its review is open.
+
+        Its walk ended because the tool was made, so it is free and would follow its own
+        plan while the reviewer decides who collects; in a pilot run it walked away for
+        three steps. It waits only when the review's options use it, and is released
+        when the review resolves, before the chosen option is recomputed.
+        """
+        task = self.prestage_ready.get(milestone)
+        if task is None or self.pending is None:
+            return
+        agent_id, step = task["agent_id"], agents[0].step
+        if agent_id in self.tasks or agent_id not in self.pending["scope"]:
+            return
+        held = {**task, "milestone": milestone, "index": 0, "state": {}, "started": step,
+                "hold_for": self.pending["id"], "source": "prestage-hold"}
+        plan, reason = self.adapter.task_plans({agent_id: held}, observations, step)[agent_id]
+        if reason is not None:
+            return
+        self.tasks[agent_id] = held
+        replies = {reply["id"]: reply for reply in responses}
+        self._override(replies, agents, agent_id, plan, "progress-prestage-hold", self.pending["id"])
+        agents[agent_id].progress_task = held["option_id"]
+        notes = getattr(agents[agent_id], "intervention_notes", None)
+        if notes is not None:
+            notes.append(f"Team assignment: keep waiting at the {held['macros'][0][1]}; a reviewer is choosing "
+                         f"who collects it.")
+        self.progress_counts["prestage_held"] += 1
+        self.event("progress_prestage_held", step, agent=agent_id, milestone=milestone,
+                   request_id=self.pending["id"])
 
     def _prestage(self, agents, observations, responses, plans, used):
         """Send free agents ahead to far materials whose tools are about to be made."""
@@ -696,7 +743,7 @@ class InterventionController:
         free = self._free_agents(agents, responses) - set(used)
         if self.pending is not None:
             free -= set(self.pending.get("scope", ()))  # keep the open review's options valid
-        proposals = self.adapter.prestage_analysis(plans, observations, self.adapter.goals(agents, responses),
+        proposals = self.adapter.prestage_analysis(plans, observations, self._goals(agents, responses),
                                                    free, self.slow_margin, skip)
         replies = {reply["id"]: reply for reply in responses}
         for proposal in proposals:
@@ -797,6 +844,10 @@ class InterventionController:
                 replies[agent.id]["thoughts"] = agent.pending_plan_response
         self.pending = None
         step, milestone = agents[0].step, pending["milestone"]
+        # An agent kept waiting at the material is free again, so the chosen option can use it.
+        for agent_id, task in list(self.tasks.items()):
+            if task.get("hold_for") == pending["id"]:
+                self._release(agents, agent_id, "review_resolved", step)
         # Legality problems of this step were not analysed while the review was open.
         if self.mode in ("auto", "human"):
             self._auto(agents, observations, responses, plans)
@@ -963,6 +1014,7 @@ class InterventionController:
             "progress_pause": self.progress_pause, "slow_margin": self.slow_margin,
             "progress_prestage": self.progress_prestage, "progress_prestaged": counts["prestaged"],
             "progress_prestage_releases": dict(self.prestage_releases),
+            "progress_prestage_held": counts["prestage_held"],
             "progress_target_steps": counts["target_steps"],
             "progress_targets_by_type": {key[len("targets_"):]: value for key, value in counts.items()
                                          if key.startswith("targets_")},
