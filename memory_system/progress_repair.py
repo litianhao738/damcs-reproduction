@@ -45,6 +45,19 @@ CRAFTER_MILESTONES = {
     "collect_diamond": ("collect", "diamond", ("make_iron_pickaxe",)),
 }
 MILESTONE_ORDER = tuple(CRAFTER_MILESTONES)
+
+
+def _stages_after():
+    """Longest chain of later stages each milestone gates (the diamond: 0, the stone pickaxe: 3)."""
+    after = {}
+    for name in reversed(MILESTONE_ORDER):
+        later = [other for other in MILESTONE_ORDER if name in CRAFTER_MILESTONES[other][2]]
+        after[name] = 1 + max((after[other] for other in later), default=-1)
+    return after
+
+
+# How critical a milestone is: a frontier milestone that gates more later stages lies on the critical path.
+STAGES_AFTER = _stages_after()
 # Inventory item received by collecting a material, and back.
 COLLECTED_ITEM = {"tree": "wood", "stone": "stone", "coal": "coal", "iron": "iron", "diamond": "diamond"}
 SOURCE_OF = {item: material for material, item in COLLECTED_ITEM.items()}
@@ -228,14 +241,50 @@ class CrafterProgress:
         self.goals = dict(goals or {})
         self.margin = slow_margin
         self.board = Board(observations)
+        self.front = frontier(observations)
         self.inventory = {agent_id: dict(obs.get("inventory") or {}) for agent_id, obs in observations.items()}
         self.free = {agent_id for agent_id in free_agents if self._active(agent_id)}
+        self._spare_cache = {}
         # Shares already planned this step count as arriving for the current-plan estimate.
         self.incoming = Counter()
         for plan in plans:
             if plan.operation == "share" and plan.recipient in observations \
                     and self.inventory.get(plan.agent_id, {}).get(plan.item, 0) > 0:
                 self.incoming[plan.recipient, plan.item] += 1
+
+    def _kept(self, agent_id, milestone):
+        """Units ``agent_id`` keeps back when an option for ``milestone`` uses its inventory.
+
+        It keeps what it needs for another frontier milestone that gates at least as many
+        later stages (``STAGES_AFTER``), when that milestone is its own goal or it already
+        holds every material for it. Handing those over would trade a step on the critical
+        path for one off it: in a pilot run the furnace option took the only stone of the
+        agent about to make the stone pickaxe, and the pickaxe came 13 steps later.
+        A tool counts for a collect milestone only when collecting is the agent's goal,
+        since many agents hold the same pickaxe.
+        """
+        stock, kept = self.inventory[agent_id], Counter()
+        for other in self.front:
+            if other == milestone or STAGES_AFTER[other] < STAGES_AFTER[milestone]:
+                continue
+            needs, _ = requirements(other)
+            ready = CRAFTER_MILESTONES[other][0] != "collect" and all(
+                stock.get(item, 0) >= count for item, count in needs.items())
+            if ready or self.goals.get(agent_id) == other:
+                for item, count in needs.items():
+                    kept[item] = max(kept[item], min(count, stock.get(item, 0)))
+        return kept
+
+    def _spare(self, milestone):
+        """Per free agent: units kept back for ``milestone`` and units it can spare (cached)."""
+        cache = self._spare_cache
+        if milestone not in cache:
+            kept = {agent_id: self._kept(agent_id, milestone) for agent_id in self.free}
+            spare = {agent_id: {item: count - kept[agent_id][item]
+                                for item, count in self.inventory[agent_id].items()}
+                     for agent_id in self.free}
+            cache[milestone] = (kept, spare)
+        return cache[milestone]
 
     def _active(self, agent_id):
         obs = self.observations.get(agent_id) or {}
@@ -344,17 +393,19 @@ class CrafterProgress:
     def _option(self, milestone, executor, working, build_here=False):
         kind, subject, _ = CRAFTER_MILESTONES[milestone]
         needs, facility = requirements(milestone, build_here)
-        stock = self.inventory[executor]
+        kept, spare = self._spare(milestone)
+        # A collect milestone only needs the tool in hand, so the executor's own tools all count.
+        stock = self.inventory[executor] if kind == "collect" else spare[executor]
         missing = {item: count - stock.get(item, 0) for item, count in needs.items() if stock.get(item, 0) < count}
         givers, left = {}, {}
         for item, count in sorted(missing.items()):
-            # Prefer idle holders, then those holding most.
+            # Prefer idle holders, then those with most to spare.
             holders = sorted((agent_id for agent_id in self.free
-                              if agent_id != executor and self.inventory[agent_id].get(item, 0) > 0),
+                              if agent_id != executor and spare[agent_id].get(item, 0) > 0),
                              key=lambda agent_id: (self.plans[agent_id].operation not in IDLE_OPERATIONS,
-                                                   -self.inventory[agent_id][item], agent_id))
+                                                   -spare[agent_id][item], agent_id))
             for holder in holders:
-                take = min(count, self.inventory[holder][item])
+                take = min(count, spare[holder][item])
                 givers.setdefault(holder, {})[item] = take
                 count -= take
                 if not count:
@@ -413,7 +464,10 @@ class CrafterProgress:
                  else [["make", subject]] if kind == "make"
                  else [["collect", subject, 1]] if kind == "collect"
                  else [["place", subject]])
-        tasks[executor] = [["collect", SOURCE_OF[item], units] for item, units in sorted(own.items())] + final
+        # The executor collects until it holds the total it acts with (plus what it keeps back);
+        # units teammates hand over count toward it, so it never stops short of the recipe.
+        tasks[executor] = [["collect", SOURCE_OF[item], units, needs[item] + kept[executor][item]]
+                           for item, units in sorted(own.items())] + final
         parts = [template, milestone, f"by{executor}",
                  ",".join(f"{giver}>{item}x{count}" for giver, items in sorted(givers.items())
                           for item, count in sorted(items.items())),
@@ -530,19 +584,26 @@ def _plan(agent_id, operation, material=NA, item=NA, recipient=-1):
     return Plan(agent_id, operation, material, item, recipient)
 
 
-def crafter_task_step(task, observation, board, done, incoming, step):
+def crafter_task_step(task, observation, board, done, incoming, step, promised=None):
     """Next plan for one locked task, or ``(None, reason)`` when the task ends.
 
     ``task["macros"]`` run in order:
 
     - ``["share", item, recipient, count]``: hand over ``count`` units, one per step;
     - ``["collect", material, count]``: walk to the material and collect ``count`` units;
+    - ``["collect", material, count, total]``: the executor's own part. It collects until
+      it holds ``total``, counting units teammates' tasks still promise to hand over
+      (``promised``), so a unit received counts once, not as collected;
     - ``["make", tool]``: walk next to the facility and make the tool once the materials are in hand;
     - ``["place", facility]``: place the facility in front (skipped when one is already nearby);
     - ``["approach", material]``: walk until facing the material, then wait there. Used to
       send an agent ahead (``CrafterProgress.prestage``); the task's milestone is the tool
       it waits for, so it ends when the tool is made.
+
+    ``make`` and ``place`` wait for materials only while a teammate's task still promises
+    them; otherwise the agent collects what is missing itself.
     """
+    promised = Counter() if promised is None else promised
     if task["milestone"] in done:
         return None, "milestone_reached"
     if observation.get("dead", False):
@@ -562,6 +623,28 @@ def crafter_task_step(task, observation, board, done, incoming, step):
     def holds(needed):
         return all(inventory.get(item, 0) + incoming[agent_id, item] >= count for item, count in needed.items())
 
+    def expected(item):
+        """Units in hand, arriving this step, or still promised by a teammate's task."""
+        return inventory.get(item, 0) + incoming[agent_id, item] + promised[agent_id, item]
+
+    def toward(material):
+        steps, _ = board.face_steps(position, facing, material)
+        if steps == INF:
+            return None
+        return _plan(agent_id, "do", material) if steps == 0 else _plan(agent_id, "Navigator", material)
+
+    def fetch(needed):
+        """Collect a missing material nobody is bringing; None when only promised units are missing."""
+        for item, count in sorted(needed.items()):
+            material = SOURCE_OF.get(item)
+            if expected(item) >= count or material is None or any(
+                    inventory.get(tool, 0) < units for tool, units in constants.collect[material]["require"].items()):
+                continue
+            plan = toward(material)
+            if plan is not None:
+                return plan
+        return None
+
     while task["index"] < len(task["macros"]):
         macro, state = task["macros"][task["index"]], task.setdefault("state", {})
         kind = macro[0]
@@ -574,19 +657,21 @@ def crafter_task_step(task, observation, board, done, incoming, step):
                 return None, "item_missing"
             state["sent"] = state.get("sent", 0) + 1
             incoming[recipient, item] += 1
+            promised[recipient, item] -= 1  # now counted in ``incoming``
             return _plan(agent_id, "share", item=item, recipient=recipient), None
         if kind == "collect":
-            _, material, count = macro
+            material, count = macro[1], macro[2]
             item = COLLECTED_ITEM[material]
-            base = state.setdefault("base", inventory.get(item, 0))
-            if inventory.get(item, 0) - base >= count:
+            if len(macro) > 3:
+                collected = expected(item) >= macro[3]
+            else:
+                base = state.setdefault("base", inventory.get(item, 0))
+                collected = inventory.get(item, 0) - base >= count
+            if collected:
                 task["index"], task["state"] = task["index"] + 1, {}
                 continue
-            steps, _ = board.face_steps(position, facing, material)
-            if steps == INF:
-                return None, "unreachable"
-            return (_plan(agent_id, "do", material) if steps == 0
-                    else _plan(agent_id, "Navigator", material)), None
+            plan = toward(material)
+            return (plan, None) if plan is not None else (None, "unreachable")
         if kind == "make":
             _, tool = macro
             recipe = constants.make[tool]
@@ -594,6 +679,10 @@ def crafter_task_step(task, observation, board, done, incoming, step):
             if inventory.get(tool, 0) > base:
                 task["index"], task["state"] = task["index"] + 1, {}
                 continue
+            if not holds(recipe["uses"]):
+                plan = fetch(recipe["uses"])
+                if plan is not None:
+                    return plan, None
             facility = recipe["nearby"][0]
             steps, _ = board.near_steps(position, facility)
             if steps == INF:
@@ -609,7 +698,7 @@ def crafter_task_step(task, observation, board, done, incoming, step):
                 task["index"], task["state"] = task["index"] + 1, {}
                 continue
             if not holds(recipe["uses"]):
-                return _plan(agent_id, "noop"), None
+                return fetch(recipe["uses"]) or _plan(agent_id, "noop"), None
             if facing is not None and board.material((position[0] + facing[0], position[1] + facing[1])) \
                     in recipe["where"]:
                 return _plan(agent_id, f"place_{facility}"), None
@@ -627,18 +716,36 @@ def crafter_task_step(task, observation, board, done, incoming, step):
     return None, "completed"
 
 
+def owed_shares(task):
+    """Units a locked task still has to hand over: ``{(recipient, item): units}``."""
+    owed = Counter()
+    for offset, macro in enumerate(task["macros"][task["index"]:]):
+        if macro[0] == "share":
+            _, item, recipient, count = macro
+            sent = (task.get("state") or {}).get("sent", 0) if offset == 0 else 0
+            owed[recipient, item] += max(count - sent, 0)
+    return owed
+
+
 def crafter_task_plans(tasks, observations, step):
     """Next plan for every locked task: ``{agent_id: (plan, None)}`` or ``(None, reason)``.
 
     Shares are planned first, so a teammate's planned share counts toward what the
-    receiver holds in the same step, as in the environment.
+    receiver holds in the same step, as in the environment. A task that ends stops
+    promising its remaining shares, so the receiver collects them itself.
     """
     board, done, incoming, results = Board(observations), achieved_milestones(observations), Counter(), {}
+    promised = Counter()
+    for task in tasks.values():
+        promised.update(owed_shares(task))
 
     def sharing(agent_id):
         task = tasks[agent_id]
         return task["index"] < len(task["macros"]) and task["macros"][task["index"]][0] == "share"
 
     for agent_id in sorted(tasks, key=lambda agent_id: (not sharing(agent_id), agent_id)):
-        results[agent_id] = crafter_task_step(tasks[agent_id], observations[agent_id], board, done, incoming, step)
+        result = crafter_task_step(tasks[agent_id], observations[agent_id], board, done, incoming, step, promised)
+        if result[0] is None:
+            promised.subtract(owed_shares(tasks[agent_id]))
+        results[agent_id] = result
     return results

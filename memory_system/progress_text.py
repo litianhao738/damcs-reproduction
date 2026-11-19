@@ -33,7 +33,7 @@ def macro_zh(macro):
         _, item, recipient, count = macro
         return f"把 {count} 个{_item(item)}送给 Agent {recipient}"
     if kind == "collect":
-        _, material, count = macro
+        material, count = macro[1], macro[2]
         item = "木头" if material == "tree" else _item(material)
         return f"去采 {count} 个{item}"
     if kind == "make":

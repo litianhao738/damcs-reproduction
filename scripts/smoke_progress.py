@@ -23,7 +23,7 @@ from memory_system.cube_adapter import CubeAdapter, observations_from_infos
 from memory_system.cube_agent import CubeAgent
 from memory_system.intervention import InterventionController, slow_margin_for, write_json
 from memory_system.llm_api import ResponseEvent, run_async
-from memory_system.progress_repair import CrafterProgress, frontier
+from memory_system.progress_repair import STAGES_AFTER, CrafterProgress, crafter_task_plans, frontier
 from memory_system.repair_scopes import generate_scope_candidates
 from memory_system.review_domains import CrafterAdapter
 from memory_system.review_server import ReviewServer
@@ -192,6 +192,90 @@ class CrafterProgressChecks(unittest.TestCase):
         self.assertEqual(controller.tasks, {})
         self.assertEqual(dict(controller.task_releases), {'budget': 1})
         self.assertIn('ended: budget', self.agents[0].intervention_notes[-1])
+
+    def furnace_tasks(self):
+        """Agent 0 places the furnace (4 stone): it holds 1, Agents 1 and 2 hand over 1 each, it collects 1."""
+        self.reach('collect_wood', 'place_table', 'make_wood_pickaxe', 'collect_stone')
+        x, y = self.players[0].pos
+        self.fixture.world[(x, y + 3)] = 'stone'
+        self.players[0].inventory.update(stone=1, wood_pickaxe=1)
+        for agent_id in (1, 2):
+            self.players[agent_id].inventory['stone'] = 1
+
+        def task(agent_id, macros):
+            return {'agent_id': agent_id, 'option_id': 'furnace', 'milestone': 'place_furnace', 'macros': macros,
+                    'index': 0, 'state': {}, 'started': 0, 'budget': 20}
+        return {0: task(0, [['collect', 'stone', 1, 4], ['place', 'furnace']]),
+                1: task(1, [['share', 'stone', 0, 1]]), 2: task(2, [['share', 'stone', 0, 1]])}
+
+    def test_executor_counts_handed_over_units_once(self):
+        # Pilot run: the stones handed over counted as collected, so the executor stopped at 3 of 4
+        # and waited at the place step until its budget ran out.
+        tasks = self.furnace_tasks()
+        first = crafter_task_plans(tasks, self.fixture.observations(), 0)
+        self.assertEqual([first[agent_id][0].operation for agent_id in (1, 2)], ['share', 'share'])
+        self.assertEqual((first[0][0].operation, first[0][0].material), ('Navigator', 'stone'))
+        self.players[0].inventory['stone'] = 3
+        for agent_id in (1, 2):
+            self.players[agent_id].inventory['stone'] = 0
+        second = crafter_task_plans({0: tasks[0]}, self.fixture.observations(), 1)
+        self.assertEqual((second[0][0].operation, second[0][0].material, tasks[0]['index']),
+                         ('Navigator', 'stone', 0))
+        self.players[0].inventory['stone'] = 4
+        third = crafter_task_plans({0: tasks[0]}, self.fixture.observations(), 2)
+        self.assertEqual((third[0][0].operation, tasks[0]['index']), ('place_furnace', 1))
+
+    def test_place_step_waits_only_for_units_a_teammate_still_promises(self):
+        tasks = self.furnace_tasks()
+        tasks[0]['index'] = 1
+        self.players[0].inventory['stone'] = 3
+        tasks[1]['macros'] = [['collect', 'stone', 1], ['share', 'stone', 0, 1]]
+        waiting = crafter_task_plans({0: tasks[0], 1: tasks[1]}, self.fixture.observations(), 0)
+        self.assertEqual(waiting[0][0].operation, 'noop')
+        # A giver that cannot hand over ends its task; nobody brings the last stone, so Agent 0 fetches it.
+        tasks[2]['macros'] = [['share', 'stone', 0, 1]]
+        self.players[2].inventory['stone'] = 0
+        fetching = crafter_task_plans({0: tasks[0], 2: tasks[2]}, self.fixture.observations(), 1)
+        self.assertEqual(fetching[2], (None, 'item_missing'))
+        self.assertEqual((fetching[0][0].operation, fetching[0][0].material), ('Navigator', 'stone'))
+
+    def test_options_leave_the_materials_of_a_more_critical_milestone(self):
+        # Pilot run: the furnace option took the only stone of the agent about to make the stone pickaxe.
+        self.assertEqual((STAGES_AFTER['collect_wood'], STAGES_AFTER['make_stone_pickaxe'],
+                          STAGES_AFTER['place_furnace'], STAGES_AFTER['collect_diamond']), (7, 3, 2, 0))
+        self.reach('collect_wood', 'place_table', 'make_wood_pickaxe', 'collect_stone')
+        x, y = self.players[0].pos
+        self.fixture.world[(x, y + 3)] = 'stone'
+        self.players[0].inventory.update(wood=1, stone=1, wood_pickaxe=1)
+        self.players[1].inventory.update(stone=2, wood_pickaxe=1)
+        self.players[2].inventory.update(stone=1, wood_pickaxe=1)
+        plans = [plan(0, 'Navigator', 'table'), plan(1), plan(2)]
+        obs = self.fixture.observations()
+        # Kept back as its goal, or because it already holds every material for the stone pickaxe.
+        for goal in ('make_stone_pickaxe', 'share'):
+            progress = CrafterProgress(plans, obs, {0: goal, 1: 'share', 2: 'share'}, {0, 1, 2}, slow_margin=4)
+            options = progress.analyse(only=['place_furnace'], force=True)['problems'][0]['options']
+            self.assertTrue(any(option['executor'] == 0 for option in options))
+            for option in options:
+                self.assertNotIn('0', option['givers'])
+                if option['executor'] == 0:
+                    brought = sum(items.get('stone', 0) for group in ('givers', 'gatherers')
+                                  for items in option[group].values()) + option['own'].get('stone', 0)
+                    self.assertEqual(brought, 4)
+                    if option['own']:
+                        self.assertEqual(option['tasks']['0'][0], ['collect', 'stone', 1, 5])
+
+    def test_the_critical_milestone_may_still_take_from_a_less_critical_one(self):
+        self.reach('collect_wood', 'place_table', 'make_wood_pickaxe', 'collect_stone')
+        self.fixture.table(2)
+        self.players[2].inventory['wood'] = 1
+        self.players[1].inventory['stone'] = 3
+        plans = [plan(0), plan(1, 'Navigator', 'stone'), plan(2)]
+        goals = {0: 'share', 1: 'place_furnace', 2: 'share'}
+        analysis = CrafterProgress(plans, self.fixture.observations(), goals, {0, 1, 2},
+                                   slow_margin=4).analyse(only=['make_stone_pickaxe'])
+        best = analysis['problems'][0]['options'][0]
+        self.assertEqual((best['executor'], best['exact'], best['givers']), (2, True, {'1': {'stone': 1}}))
 
     def test_no_commit_ablation_only_writes_the_assignment_into_the_context(self):
         self.wood_scene()
