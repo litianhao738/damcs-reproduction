@@ -11,9 +11,20 @@
     "api_key_env": "QWEN_API_KEY",
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "model": "text-embedding-v4",
-    "price_per_million_tokens": null
+    "price_per_million_tokens": 0.5
   },
   "profiles": {
+    "glm_bailian": {
+      "provider": "compatible",
+      "model": "glm-5.3",
+      "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "BAILIAN_TOKEN_PLAN_API_KEY",
+      "input_mode": "text",
+      "tier": "flagship",
+      "input_price_per_million_tokens": 8,
+      "output_price_per_million_tokens": 28,
+      "generate_kwargs": {"reasoning_effort": "low"}
+    },
     "qwen": {
       "provider": "qwen",
       "model": "qwen3.7-plus",

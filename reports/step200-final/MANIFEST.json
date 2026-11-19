@@ -1,0 +1,23 @@
+{
+  "complete": true,
+  "formal_expected": 36,
+  "formal_valid": 36,
+  "formal_step_limit": 200,
+  "formal_valid_by_variant": {
+    "A": 6,
+    "B": 6,
+    "C": 6,
+    "H": 6,
+    "C-no-legality": 6,
+    "C-no-llm": 6
+  },
+  "cohorts": {
+    "original": 34,
+    "token_plan_supplement": 2
+  },
+  "reviewer_plan": {
+    "qwen4-max-preview": 6
+  },
+  "source_sha256": "b0db93675d4f28d8865671f6b907c684c52adfea08f8dc8d6f78c741c7b2aa10",
+  "delivery_commit": "b4c556ed4cf073230bf4ef5ef1a7cbf5bfc538f1"
+}

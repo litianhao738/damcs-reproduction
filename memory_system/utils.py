@@ -1,10 +1,11 @@
 import base64
+from math import ceil
 from mimetypes import guess_type
 from pathlib import Path
 from PIL import Image
 import io
 from agentscope.message import ImageBlock, Msg, TextBlock, URLSource
-from .constants import world_item_ids, walkables, MATERIALS, ACTIONS, GENERAL_DESCRIPTION, ENV_DESCRIPTION, RESPONSE_DESCRIPTION, VITALS
+from .constants import world_ids_item, world_item_ids, walkables, MATERIALS, ACTIONS, GENERAL_DESCRIPTION, ENV_DESCRIPTION, RESPONSE_DESCRIPTION, VITALS
 from .pathfinding import PathFinding
 import crafter.constants as const
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -26,44 +27,55 @@ def local_image_to_data_url(image_path):
 # Reference texture sheet shown to the LLM alongside each agent view.
 TEXTURE_REFERENCE_PATH = Path(__file__).resolve().with_name("textures.png")
 
+
+def describe_local_view(info):
+    """Render the same local map window as Crafter's image view using tile names."""
+    width, view_height = info["view"]
+    height = view_height - ceil(len(const.items) / width)
+    center_x, center_y = info["player_pos"]
+    left, top = center_x - width // 2, center_y - height // 2
+    semantic = info["semantic"]
+    map_width, map_height = semantic.shape
+    rows = []
+    for y in range(top, top + height):
+        tiles = [world_ids_item[int(semantic[x, y])] if 0 <= x < map_width and 0 <= y < map_height
+                 else "off_map" for x in range(left, left + width)]
+        rows.append(" ".join(tiles))
+    return ("\n### Local view\n"
+            f"Tiles from left to right, then top to bottom, starting at ({left}, {top}). "
+            "Coordinates increase rightward and downward. You are at the center.\n"
+            + "\n".join(rows) + "\n")
+
+
 #load the text from the file
-def generate_inquiry(vision, description=""):
+def generate_inquiry(vision=None, description=""):
     """Build the AgentScope messages for one planning step.
 
     Local image paths are inlined as base64 data URLs by the AgentScope
     formatter when the messages are sent to the model.
     """
-    msg = [
-            Msg(name="system", content="You are a helpful assistant.", role="system"),
-            Msg(
-                name="environment",
-                role="user",
-                content=[
-                    TextBlock(
-                        type="text",
-                        text=GENERAL_DESCRIPTION + ENV_DESCRIPTION + "The image of all materials in the game and your current view of the envionrment.",
-                    ),
-                    ImageBlock(
-                        type="image",
-                        source=URLSource(type="url", url=str(TEXTURE_REFERENCE_PATH)),
-                    ),
-                    ImageBlock(
-                        type="image",
-                        source=URLSource(type="url", url=str(vision)),
-                    ),
-                    TextBlock(
-                        type="text",
-                        text=description + """\n
+    introduction = GENERAL_DESCRIPTION + ENV_DESCRIPTION
+    images = []
+    if vision is not None:
+        introduction += "The images show the game materials and your current view of the environment."
+        images = [ImageBlock(type="image", source=URLSource(type="url", url=str(path)))
+                  for path in (TEXTURE_REFERENCE_PATH, vision)]
+    else:
+        introduction += "Use the textual observations of your current view below."
+    return [
+        Msg(name="system", content="You are a helpful assistant.", role="system"),
+        Msg(name="environment", role="user", content=[
+            TextBlock(type="text", text=introduction),
+            *images,
+            TextBlock(type="text", text=description + """\n
 ### Instructions for response
 - Please answer each question accurately and faithfully relying on current inventory, view, and situation (health stats, inventory items, and recent actions) and what you see.
 - consider the past experiences, goals, and relevant expriences. What happened, what did you do, did you succeed, and can you do better?
 - consider action prerequisites when make plans.\n
 """,
-                    ),
-                ],
             ),
-        ]
-    return msg
+        ]),
+    ]
 
 # Not Using
 # def find_most_similar_term(term, references):

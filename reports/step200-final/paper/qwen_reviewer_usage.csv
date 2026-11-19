@@ -1,0 +1,7 @@
+﻿seed,repeat_id,reviewer_id,review_requests,reviewer_replies,accepted_or_kept,review_timeouts,reviewer_wall_seconds,api_attempts,api_attempts_with_usage,reviewer_input_tokens,reviewer_output_tokens,reviewer_total_tokens
+4,0,qwen4-max-preview,4,3,3,1,17.125049772672355,5,5,7837,510,8347
+4,1,qwen4-max-preview,6,6,6,0,37.7345554176718,7,7,10865,739,11604
+5,0,qwen4-max-preview,6,6,5,0,75.55446214787662,11,11,16609,1201,17810
+5,1,qwen4-max-preview,7,7,6,0,42.66843841318041,9,9,14709,1004,15713
+6,0,qwen4-max-preview,3,3,3,0,12.895313722081482,3,3,4721,343,5064
+6,1,qwen4-max-preview,3,3,3,0,30.239265182055533,5,5,7833,541,8374

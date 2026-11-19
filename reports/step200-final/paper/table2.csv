@@ -1,0 +1,5 @@
+﻿Condition,Valid runs,Diamond steps,Success,Milestones,Stalled steps,API on-demand equivalent (CNY)
+C: Full automatic system,6/6,104.8 ± 74.5,4/6 (67%),9.7 ± 0.5,40.5 ± 62.7,19.7978 ± 17.3476
+C-no-legality: Without legality repair,6/6,106.3 ± 73.7,4/6 (67%),9.7 ± 0.5,37.0 ± 57.3,15.7529 ± 13.4919
+B: Without progress repair,6/6,143.0 ± 63.0,3/6 (50%),9.5 ± 0.5,33.7 ± 39.2,25.3496 ± 11.9300
+C-no-llm: Standalone rule-based planner (LLM off),6/6,136.7 ± 49.3,4/6 (67%),9.7 ± 0.5,29.7 ± 44.4,0.0000 ± 0.0000

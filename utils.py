@@ -684,7 +684,7 @@ def get_arg_parser():
     parser.add_argument('--review_timeout', type=float, default=120)
     parser.add_argument('--review_step_seconds', type=float, default=1)
     parser.add_argument('--review_port', type=int, default=8765)
-    parser.add_argument('--reviewer', choices=['human', 'scripted'], default='human')
+    parser.add_argument('--reviewer', choices=['human', 'scripted', 'ai'], default='human')
     parser.add_argument('--scripted_decision', choices=['approve', 'reject'], default='approve')
     parser.add_argument('--scripted_delay_steps', type=int, default=2)
     parser.add_argument('--results_dir', type=str, default='results',

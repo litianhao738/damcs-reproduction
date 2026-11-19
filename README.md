@@ -1,5 +1,7 @@
 # DAMCS Reproduction: Multi-Agent Crafter with LLM Agents
 
+[Final 200-step experiment results (36 runs, Tables 1 and 2)](reports/step200-final/README.md).
+
 This repository is an executable reproduction and engineering adaptation of the DAMCS project: [LLM-Powered Decentralized Generative Agents with Adaptive Hierarchical Knowledge Graph for Cooperative Planning](https://happyeureka.github.io/damcs/).
 
 It runs multiple LLM-powered agents in a shared 2D Crafter world. The team must cooperate through resource gathering, crafting, memory, and structured information sharing to obtain a diamond.

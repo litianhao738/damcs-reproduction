@@ -1,0 +1,5 @@
+﻿Condition,Valid runs,Diamond steps,Success,Milestones,Stalled steps,API on-demand equivalent (CNY),Repair success,Review requests / run,Review seconds / run
+A: DAMCS baseline,6/6,128.8 ± 64.0,4/6 (67%),9.7 ± 0.5,36.0 ± 44.6,21.3769 ± 13.0289,—,—,—
+B: A + legality repair,6/6,143.0 ± 63.0,3/6 (50%),9.5 ± 0.5,33.7 ± 39.2,25.3496 ± 11.9300,—,—,—
+C: B + automatic progress repair,6/6,104.8 ± 74.5,4/6 (67%),9.7 ± 0.5,40.5 ± 62.7,19.7978 ± 17.3476,54/56 (96%),—,—
+H: C + selective Qwen4-Max-Preview review (H-Q),6/6,116.8 ± 67.7,4/6 (67%),9.7 ± 0.5,34.0 ± 52.7,18.5532 ± 15.9251,62/62 (100%),4.8 ± 1.7,36.0 ± 22.5

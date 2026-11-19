@@ -80,6 +80,7 @@ def profile_env(name, settings=None):
         "EMBEDDING_BASE_URL": embedding["base_url"],
         "EMBEDDING_MODEL": embedding["model"],
         "LLM_JSON_MODE": "json_object",
+        "LLM_INPUT_MODE": profile.get("input_mode", "vision"),
         "LLM_GENERATE_KWARGS": json.dumps({**settings.get("shared_generate_kwargs", {}),
                                            **profile.get("generate_kwargs", {})}),
         "MODEL_PROFILE": name,
@@ -95,6 +96,7 @@ def profile_record(name, settings=None):
     embedding = settings["embedding"]
     return {
         "model_profile": name, "chat_model": profile["model"], "model_tier": profile.get("tier", ""),
+        "input_mode": profile.get("input_mode", "vision"),
         "base_url": profile["base_url"], "currency": settings.get("currency"),
         "input_price_per_million_tokens": profile.get("input_price_per_million_tokens"),
         "output_price_per_million_tokens": profile.get("output_price_per_million_tokens"),

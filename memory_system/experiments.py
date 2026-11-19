@@ -6,9 +6,6 @@ import os
 from pathlib import Path
 import subprocess
 
-from .intervention import write_json
-
-
 # (coordination_mode, repair_rounds, scope_mode, review_strategy, progress_mode).
 # Each condition adds one module to the previous one: legality repair (B: up to two rounds
 # of replanning, with the verified repair scope S as a fallback when a plan is still
@@ -36,6 +33,13 @@ def apply_condition(args):
          args.progress_mode) = CONDITIONS[args.condition]
 
 
+def write_json(path, value):
+    path = Path(path)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
 def experiment_config(args, environment):
     root = Path(__file__).resolve().parents[1]
     paths = subprocess.check_output(
@@ -55,7 +59,7 @@ def experiment_config(args, environment):
         'models': {key: os.getenv(key) for key in (
             'MODEL_PROFILE', 'LLM_PROVIDER', 'OPENAI_MODEL', 'OPENAI_EMBEDDING_MODEL',
             'QWEN_CHAT_MODEL', 'QWEN_EMBEDDING_MODEL', 'LLM_CHAT_MODEL', 'LLM_BASE_URL',
-            'EMBEDDING_MODEL', 'EMBEDDING_BASE_URL', 'LLM_JSON_MODE', 'LLM_GENERATE_KWARGS',
+            'EMBEDDING_MODEL', 'EMBEDDING_BASE_URL', 'LLM_JSON_MODE', 'LLM_GENERATE_KWARGS', 'LLM_INPUT_MODE',
             'AZURE_OPENAI_CHAT_DEPLOYMENT', 'AZURE_OPENAI_EMBEDDING_DEPLOYMENT',
         )},
         'execution_guard': True,

@@ -1,0 +1,6 @@
+﻿Metric (H-Q minus C),Pairs,Complete maps,Map-level mean ± SD
+Diamond steps,6/6,3/3,12.00 ± 20.78
+Task success (0/1),6/6,3/3,0.00 ± 0.00
+Wall-clock seconds,6/6,3/3,180.38 ± 403.45
+API on-demand equivalent (CNY),6/6,3/3,-1.2446 ± 2.0996
+Paused agent-steps,6/6,3/3,95.83 ± 32.11

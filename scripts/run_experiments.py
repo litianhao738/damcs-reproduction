@@ -25,8 +25,7 @@ from time import perf_counter
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from memory_system.experiments import CONDITIONS
-from memory_system.intervention import write_json
+from memory_system.experiments import CONDITIONS, write_json
 from memory_system.model_profiles import episode_cost, load_profiles, profile_env, profile_record
 from memory_system.checkpoint import checkpoint_path
 
@@ -35,6 +34,13 @@ def positive_int(value):
     number = int(value)
     if number < 1:
         raise argparse.ArgumentTypeError('must be at least 1')
+    return number
+
+
+def nonnegative_int(value):
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError('must be at least 0')
     return number
 
 
@@ -88,9 +94,16 @@ def variants(args):
 def build_matrix(args):
     profiles = args.model_profiles or [None]
     settings_file = load_profiles() if args.model_profiles else None
+    selected = variants(args)
+    if args.variants:
+        unknown = set(args.variants) - {tag for tag, _, _ in selected}
+        if unknown:
+            raise ValueError(f"Unknown variants for suite {args.suite}: {', '.join(sorted(unknown))}")
+        selected = [row for row in selected if row[0] in args.variants]
+    repeats = range(args.repeat_offset, args.repeat_offset + args.repeats)
     matrix = []
     for profile, (tag, condition, s), seed, repeat in product(
-            profiles, variants(args), args.seeds, range(args.repeats)):
+            profiles, selected, args.seeds, repeats):
         k = s['scope_max_agents']
         parts = ([profile] if profile else []) + [
             tag, f'seed{seed}', f'r{repeat}', f'k{"all" if k is None else k}',
@@ -196,15 +209,20 @@ def summarize_run(directory, step_limit=None):
     applied = [event for event in events if event['event'] == 'plan_applied']
     skipped = Counter(event.get('reason') for event in events if event['event'] == 'review_skipped')
     row = {key: config.get(key) for key in (
-        'environment', 'condition', 'seed', 'repeat_id', 'reviewer', 'reviewer_id', 'scope_max_agents',
+        'environment', 'condition', 'seed', 'repeat_id', 'agent_num', 'reviewer', 'reviewer_id', 'scope_max_agents',
         'review_max_agents', 'scope_selection', 'human_requests', 'review_trigger', 'review_cooldown', 'stall_steps', 'stall_fraction',
         'evidence_mode', 'pause_mode',
         'revalidation', 'source_sha256', 'git_head',
+        'coordination_mode', 'repair_rounds', 'scope_mode', 'review_strategy', 'execution_guard',
     )}
     models = config.get('models') or {}
     row['config_chat_model'] = models.get('LLM_CHAT_MODEL') or models.get('QWEN_CHAT_MODEL') \
         or models.get('OPENAI_MODEL')
+    row['config_input_mode'] = models.get('LLM_INPUT_MODE')
     row['config_model_profile'] = models.get('MODEL_PROFILE')
+    row['config_agent_llm'] = config.get('agent_llm')
+    row['config_progress_mode'] = config.get('progress_mode')
+    row['config_progress_commit'] = config.get('progress_commit')
     row.update({key: summary.get(key) for key in (
         'total_steps', 'task_success', 'termination_reason', 'requests_issued', 'human_seconds', 'commits',
         'paused_agent_steps', 'team_score', 'total_reward',
@@ -213,6 +231,12 @@ def summarize_run(directory, step_limit=None):
     outcomes = summary.get('outcomes', [])
     edited = [len(event.get('edited_agents') or {edit['agent_id'] for edit in event['edits']})
               for event in applied]
+    usage_path = directory / 'model_usage.json'
+    usage = read_json(usage_path)
+    if usage_path.is_file() and config.get('agent_llm') == 'off':
+        for counter in ('chat_requests', 'embedding_requests', 'chat_input_tokens',
+                        'chat_output_tokens', 'embedding_tokens'):
+            usage.setdefault(counter, 0)
     row.update({
         'run_dir': str(directory), 'completed': bool(summary),
         'illegal_plan_steps': sum(bool(first) for first, _ in illegal),
@@ -227,6 +251,7 @@ def summarize_run(directory, step_limit=None):
         'evidence_groups_before': sum(review['evidence']['fact_groups_before'] for review in legal_reviews),
         'evidence_groups_after': sum(review['evidence']['fact_groups_after'] for review in legal_reviews),
         'real_human_replies': sum(reply.get('provider') == 'human_web' for reply in replies),
+        'ai_external_replies': sum(reply.get('provider') == 'ai_external' for reply in replies),
         'scripted_replies': sum(reply.get('provider') == 'scripted' for reply in replies),
         'invalid_replies': sum(reply['status'] in ('invalid', 'permission', 'stale_plan') for reply in replies),
         'timeouts': sum(reply['status'] == 'timeout' for reply in replies),
@@ -238,7 +263,7 @@ def summarize_run(directory, step_limit=None):
                                      for review in reviews) for signal in ('choice', 'unknown', 'stalled')},
         'not_critical_skips': skipped.get('not_critical', 0),
         'planning_failures': sum(event['event'] == 'planning_failed' for event in events),
-        **read_json(directory / 'model_usage.json'),
+        **usage,
     })
     row.update({f'reply_{status}': count for status, count in
                 Counter(reply['status'] for reply in replies).items()})
@@ -269,6 +294,8 @@ def summarize_run(directory, step_limit=None):
     successes = (sum(outcome['recovered'] for outcome in outcomes) + (summary.get('progress_exact_success') or 0)
                  + (summary.get('progress_tasks_completed') or 0))
     row['repair_success_rate'] = successes / attempts if attempts else None
+    row['repair_attempts'] = attempts
+    row['repair_successes'] = successes
     row.update(milestone_steps(directory, step_limit))
     return row
 
@@ -287,9 +314,12 @@ def get_parser():
     parser.add_argument('--environment', choices=['crafter', 'cube'], default='crafter')
     parser.add_argument('--conditions', nargs='+', choices=list(CONDITIONS), default=list(CONDITIONS))
     parser.add_argument('--seeds', type=int, nargs='+', default=[4, 5, 6])
-    parser.add_argument('--repeats', type=int, default=1)
+    parser.add_argument('--repeats', type=positive_int, default=1)
+    parser.add_argument('--repeat_offset', type=nonnegative_int, default=0,
+                        help='Start repeat IDs here for separately scheduled runs.')
     parser.add_argument('--suite', choices=['main', 'ablation', 'appendix', 'capacity', 'evidence', 'waiting'],
                         default='main')
+    parser.add_argument('--variants', nargs='+', help='Run only the named variants within the selected suite.')
     parser.add_argument('--model_profiles', nargs='+', default=None,
                         help='Named profiles from config/model_profiles.json; default: the current environment.')
     parser.add_argument('--agent_num', type=int, default=6)
@@ -315,7 +345,7 @@ def get_parser():
     parser.add_argument('--pause_mode', choices=['global', 'local', 'none'], default='local')
     parser.add_argument('--evidence_mode', choices=['full', 'compact'], default='compact')
     parser.add_argument('--revalidation', choices=['incremental', 'full', 'none'], default='incremental')
-    parser.add_argument('--reviewer', choices=['human', 'scripted'], default='human')
+    parser.add_argument('--reviewer', choices=['human', 'scripted', 'ai'], default='human')
     parser.add_argument('--reviewer_id', default='', help='Recorded with every run of this batch.')
     parser.add_argument('--review_timeout', type=float, default=120)
     parser.add_argument('--review_step_seconds', type=float, default=1)
@@ -357,9 +387,17 @@ def main():
     args = get_parser().parse_args()
     output = Path(args.results_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    matrix = build_matrix(args)
+    if len(set(args.seeds)) != len(args.seeds):
+        sys.exit('Seeds must be distinct within a batch.')
+    try:
+        matrix = build_matrix(args)
+    except ValueError as error:
+        sys.exit(str(error))
     if not args.summarize_only:
-        write_json(output / 'matrix.json', matrix)
+        matrix_path = output / 'matrix.json'
+        if args.resume and matrix_path.is_file() and read_json(matrix_path) != matrix:
+            sys.exit(f'{matrix_path}: settings changed. Use the original command or start a new batch.')
+        write_json(matrix_path, matrix)
     if args.dry_run:
         for run in matrix:
             prefix = f"[{run['model_profile']}] " if run.get('model_profile') else ''
@@ -369,8 +407,9 @@ def main():
         matrix = read_json(output / 'matrix.json')
     else:
         # Fail before the first run if any profile lacks a model name or key.
-        for name in sorted({run['model_profile'] for run in matrix if run.get('model_profile')}):
-            profile_env(name)
+        model_envs = {name: profile_env(name) for name in sorted({
+            run['model_profile'] for run in matrix if run.get('model_profile') and run['agent_llm'] == 'on'
+        })}
     rows = []
     for run in matrix:
         directory = Path(run['directory'])
@@ -381,8 +420,8 @@ def main():
             print(f"Skipping {run['run_id']} (finished)", flush=True)
         else:
             env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
-            if run.get('model_profile'):
-                env.update(profile_env(run['model_profile']))
+            if run['agent_llm'] == 'on' and run.get('model_profile'):
+                env.update(model_envs[run['model_profile']])
             if action == 'fresh' and args.resume and directory.exists() and any(directory.iterdir()):
                 print(f"Keeping the failed attempt as {set_aside(directory).name}", flush=True)
             directory.mkdir(parents=True, exist_ok=True)
@@ -399,7 +438,9 @@ def main():
             })
         row = {**summarize_run(directory, run.get('step_limit')), **run, **read_json(directory / 'process.json')}
         row.pop('command')
-        row['episode_cost'] = episode_cost(row, row)
+        row['episode_cost'] = (0.0 if row['agent_llm'] == 'off' and all(row.get(counter) == 0 for counter in (
+            'chat_requests', 'embedding_requests', 'chat_input_tokens', 'chat_output_tokens', 'embedding_tokens',
+        )) else episode_cost(row, row))
         rows.append(row)
         export_rows(output, rows)
     print(f"Saved {len(rows)} episodes to {output / 'episodes.csv'}")

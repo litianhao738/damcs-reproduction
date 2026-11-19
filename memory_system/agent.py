@@ -1,12 +1,13 @@
 from .memory_system import MemorySystem, Experience
 # import enum
 from enum import Enum
+import os
 from pathlib import Path
 from .knowledge_graph import LongTermMemory, SemanticMemory, WorkingMemory
 from .backbone_models.vision_model import VisionModel
 from .llm_api import ResponseEvent, TextModel, aget_completion, run_async
 import torch
-from .utils import generate_inquiry, safe_extract_op
+from .utils import describe_local_view, generate_inquiry, safe_extract_op
 from agentscope.agent import AgentBase
 from agentscope.message import Msg
 # vision_model = VisionModel()
@@ -57,7 +58,7 @@ class Agent(AgentBase):
     returns a Msg whose metadata carries the structured ResponseEvent.
     """
 
-    def __init__(self, id, kg_update_freq=10, results_dir="results"):
+    def __init__(self, id, kg_update_freq=10, results_dir="results", llm_enabled=True):
         super().__init__()
         self.memory_system = MemorySystem(num_history_actions=7)
         # The simulation indexes agents by integer id, so this replaces the
@@ -76,7 +77,7 @@ class Agent(AgentBase):
         # Set while the agent runs a locked progress-repair task; it then skips planning.
         self.progress_task = None
         # False for the "mechanisms only" control: idle plans, no model calls (see IDLE_PLAN).
-        self.llm_enabled = True
+        self.llm_enabled = llm_enabled
         self.action_status = ActionStatus.DONE
         self.op = 'noop'
         self.action = 'noop'
@@ -87,7 +88,7 @@ class Agent(AgentBase):
         self.kg_update_freq = kg_update_freq
         self.long_term_mem = LongTermMemory(path=str(self.agent_dir), recent_experience_num=kg_update_freq)
         self.replay = []
-        self.text_model = TextModel()
+        self.text_model = TextModel() if llm_enabled else None
         
         self.wm_content = ""
         self.think_context = ""
@@ -202,8 +203,11 @@ class Agent(AgentBase):
                        metadata=self.thoughts.model_dump(mode="json"))
         context = msg.get_text_content()
         self.think_context = context
-        inquiry = generate_inquiry(vision=str(self.agent_dir / f"{self.step}.png"),
-                                   description=context)
+        text_only = os.getenv("LLM_INPUT_MODE") == "text"
+        vision = None if text_only else self.agent_dir / f"{self.step}.png"
+        if text_only:
+            context += describe_local_view(self.info)
+        inquiry = generate_inquiry(vision=vision, description=context)
         self.thoughts = await aget_completion(inquiry)
         return Msg(
             name=self.name,
